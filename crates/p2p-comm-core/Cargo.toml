@@ -1,0 +1,25 @@
+[package]
+name = "p2p-comm-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+p2p-core = { git = "https://github.com/klzw2233/P2PCore.git", branch = "feat/datagram-api" }
+p2p-trust = { git = "https://github.com/klzw2233/P2PCore.git", branch = "feat/datagram-api" }
+tokio = { version = "1.42", features = ["rt-multi-thread", "sync", "time"] }
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "6.0"
+bytes = "1.9"
+
+# Media
+opus = "0.4"
+openh264 = "0.9"
+cpal = "0.18"
+nokhwa = { version = "0.10", features = ["input-v4l", "input-msmf"] }
+
+[lints]
+workspace = true
