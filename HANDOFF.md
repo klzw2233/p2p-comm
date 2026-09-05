@@ -2,7 +2,7 @@
 
 ## 项目状态
 
-**当前阶段**: 脚手架完成；spec 在 GitHub issue #1（`ready-for-agent`）。实现尚未开始（core `placeholder()`，GUI 一行标题）。
+**当前阶段**: issue #3 身份密码解锁已实现。core 可创建/解锁 `FileKeyStore` 身份；GUI 密码窗 → 空壳主界面（侧边栏 + 聊天区 + 本机 Peer ID）。尚未连远端、未收发消息。
 
 栈评估（2026-09-06）: [notes/2026-09-06-stack-architecture-review.md](./notes/2026-09-06-stack-architecture-review.md)
 
@@ -16,7 +16,7 @@ cd p2p-comm
 # 编译（需要配置 P2PCORE_TOKEN 环境变量以拉取私有 P2PCore 依赖）
 cargo build
 
-# 运行（GUI 占位界面）
+# 运行（启动后输入身份密码进入主界面）
 cargo run -p p2p-comm-gui
 ```
 
@@ -54,7 +54,7 @@ cargo run -p p2p-comm-gui
 1. ~~等 P2PCore PR #22 合入 main~~ 已切到 `main`
 2. ~~开第一张 spec issue~~ issue #1
 3. ~~搭建 CI~~ `.github/workflows/ci.yml`
-4. 按 issue #1 实现（顺序：存储/文字 → GUI → 文件 → 语音 → 视频）
+4. 按 issue #1 实现（顺序：~~身份解锁~~ → 存储/文字 → GUI → 文件 → 语音 → 视频）
 5. 朋友异机验收
 
 ## 已知约束
