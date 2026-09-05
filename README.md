@@ -48,6 +48,7 @@ cargo run --release -p p2p-comm-gui
 2. **添加联系人**: 需要对方的 Peer ID（64 字符十六进制字符串）
 3. **拨号连接**: 选择联系人，点击连接
 4. **通话时请使用耳机**（v1 不含回声消除）
+5. v1 使用 n0 公共 relay（hobby，无 SLA）。直连失败时音视频可能被限速
 
 ## 数据目录
 
@@ -70,7 +71,7 @@ p2p-comm-core (无头核心)
 P2PCore (Session 抽象 + 信任管理)
 ```
 
-详见 [CONTEXT.md](./CONTEXT.md) 和 [HANDOFF.md](./HANDOFF.md)。
+详见 [CONTEXT.md](./CONTEXT.md)、[HANDOFF.md](./HANDOFF.md) 和规格 [issue #1](https://github.com/klzw2233/p2p-comm/issues/1)。
 
 ## 开发
 

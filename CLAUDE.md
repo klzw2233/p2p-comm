@@ -50,4 +50,20 @@ GitHub Actions 矩阵:
 - **同机测试**: Win10 宿主 + Ubuntu VM 不可靠，只做 CI 编译验证 + 朋友异机测试
 - **设备**: v1 只抓系统默认设备，不做选择界面
 - **回声消除**: 不做，README 写明"请用耳机"
-- **Relay**: 暂用 `n0.computer` 公共 relay
+- **Relay**: v1 用 P2PCore `RelayConfig::n0_public()`。n0 公共 relay 是 hobby（无 SLA、有限速）；生产需自建
+- **视频数据报**: NAL 必须 ≤ `Session::max_datagram_size() - 9`；丢包花屏可接受
+- **文件 HOL**: FileChunk 与文字/信令共用 Session 唯一可靠流
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (`klzw2233/p2p-comm`) via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical roles, same strings: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
