@@ -6,8 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-p2p-core = { git = "https://github.com/klzw2233/P2PCore.git", branch = "feat/datagram-api" }
-p2p-trust = { git = "https://github.com/klzw2233/P2PCore.git", branch = "feat/datagram-api" }
+p2p-core = { git = "https://github.com/klzw2233/P2PCore.git", branch = "main" }
+p2p-trust = { git = "https://github.com/klzw2233/P2PCore.git", branch = "main" }
 tokio = { version = "1.42", features = ["rt-multi-thread", "sync", "time"] }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
