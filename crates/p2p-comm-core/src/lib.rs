@@ -10,6 +10,8 @@ mod inbox;
 mod nicknames;
 mod node;
 mod roster;
+mod video;
+mod video_io;
 
 pub use chatlog::ChatKeys;
 pub use frame::{
@@ -24,6 +26,7 @@ pub use node::{
     Snapshot, TransferStatus,
 };
 pub use roster::{ChatError, PeerStatus};
+pub use video::VideoFrame;
 
 /// Unlocked local identity. The secret seed is not retained.
 #[derive(Debug)]
