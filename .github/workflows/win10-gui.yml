@@ -1,0 +1,48 @@
+name: Win10 GUI
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache target
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-release-target-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build GUI (release)
+      run: cargo build --release -p p2p-comm-gui
+      env:
+        P2PCORE_TOKEN: ${{ secrets.P2PCORE_TOKEN }}
+
+    - name: Upload exe
+      uses: actions/upload-artifact@v4
+      with:
+        name: p2p-comm-gui-windows
+        path: target/release/p2p-comm-gui.exe
+        if-no-files-found: error
+        retention-days: 14

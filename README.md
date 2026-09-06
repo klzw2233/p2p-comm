@@ -40,6 +40,10 @@ cargo build --release
 cargo run --release -p p2p-comm-gui
 ```
 
+### Windows GUI（GitHub Actions）
+
+Actions → **Win10 GUI** → Run workflow。编完下载 artifact `p2p-comm-gui-windows`（`p2p-comm-gui.exe`）。
+
 首次启动会提示输入身份密码，用于加密本地存储的身份密钥。
 
 ## 使用说明
