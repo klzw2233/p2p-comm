@@ -2,10 +2,16 @@ use std::path::{Path, PathBuf};
 
 use p2p_trust::{FileKeyStore, IdentityKey, KeyStore, PeerId, TrustError};
 
+mod chatlog;
+mod frame;
+mod inbox;
 mod nicknames;
 mod node;
 mod roster;
 
+pub use chatlog::ChatKeys;
+pub use frame::{decode_frame, encode_text, Decoded};
+pub use inbox::{ChatMessage, Direction};
 pub use nicknames::{resolve_dial, short_id, NicknameStore};
 pub use node::{Node, SidebarItem, Snapshot};
 pub use roster::{ChatError, PeerStatus};
@@ -37,6 +43,9 @@ pub enum Error {
     EmptyNickname,
     DuplicateNickname,
     Bind,
+    InvalidFrame,
+    NotConnected,
+    DecryptFailed,
 }
 
 /// Platform data directory (`~/.local/share/p2p-comm` on Linux, `%APPDATA%\p2p-comm` on Windows).

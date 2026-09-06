@@ -8,12 +8,17 @@ rust-version.workspace = true
 [dependencies]
 p2p-core = { git = "https://github.com/klzw2233/P2PCore.git", branch = "main" }
 p2p-trust = { git = "https://github.com/klzw2233/P2PCore.git", branch = "main" }
-tokio = { version = "1.42", features = ["rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.42", features = ["rt-multi-thread", "sync", "time", "macros"] }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dirs = "6.0"
 bytes = "1.9"
+argon2 = "0.5"
+hkdf = "0.12"
+sha2 = "0.10"
+chacha20poly1305 = "0.10"
+rand = "0.8"
 
 # Media
 opus = "0.4"

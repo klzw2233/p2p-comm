@@ -43,6 +43,8 @@ struct MainState {
     dial_error: Option<String>,
     nickname_draft: String,
     nickname_error: Option<String>,
+    compose: String,
+    send_error: Option<String>,
 }
 
 struct App {
@@ -71,6 +73,8 @@ impl eframe::App for App {
                             dial_error: None,
                             nickname_draft: String::new(),
                             nickname_error: None,
+                            compose: String::new(),
+                            send_error: None,
                         }))),
                         Err(err) => {
                             form.error = Some(error_text(err).to_owned());
@@ -84,7 +88,10 @@ impl eframe::App for App {
             Screen::Main(main) => {
                 let changed = main.node.poll();
                 let snap = main.node.snapshot();
-                if changed || snap.selected_status == Some(PeerStatus::Connecting) {
+                if changed
+                    || snap.selected_status == Some(PeerStatus::Connecting)
+                    || snap.selected_status == Some(PeerStatus::Connected)
+                {
                     ctx.request_repaint();
                 } else {
                     ctx.request_repaint_after(std::time::Duration::from_millis(200));
@@ -116,6 +123,9 @@ fn error_text(err: Error) -> &'static str {
         Error::EmptyNickname => "Nickname cannot be empty.",
         Error::DuplicateNickname => "That nickname is already used.",
         Error::Bind => "Could not start the network endpoint.",
+        Error::InvalidFrame => "Malformed message.",
+        Error::NotConnected => "Not connected to this Peer.",
+        Error::DecryptFailed => "Could not decrypt chat history.",
     }
 }
 
@@ -174,7 +184,12 @@ fn sidebar_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
     let mut del_nick = None;
     for item in &snap.sidebar {
         let selected = snap.selected.as_deref() == Some(item.peer_id_hex.as_str());
-        let response = ui.selectable_label(selected, &item.label);
+        let label = if item.unread > 0 {
+            format!("{} ({})", item.label, item.unread)
+        } else {
+            item.label.clone()
+        };
+        let response = ui.selectable_label(selected, label);
         if response.clicked() {
             select = Some(item.peer_id_hex.clone());
         }
@@ -274,6 +289,53 @@ fn chat_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
             }
         }
     }
+    ui.separator();
+    egui::ScrollArea::vertical()
+        .stick_to_bottom(true)
+        .max_height(ui.available_height() - 40.0)
+        .show(ui, |ui| {
+            for msg in &snap.messages {
+                ui.label(format_message(msg));
+            }
+        });
+    ui.horizontal(|ui| {
+        let edit = ui.add(
+            egui::TextEdit::singleline(&mut main.compose)
+                .hint_text("message")
+                .desired_width(ui.available_width() - 70.0),
+        );
+        let send = ui.button("Send").clicked()
+            || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+        if send {
+            match main.node.send_text(peer, &main.compose) {
+                Ok(()) => {
+                    main.compose.clear();
+                    main.send_error = None;
+                }
+                Err(err) => main.send_error = Some(error_text(err).to_owned()),
+            }
+        }
+    });
+    if let Some(error) = &main.send_error {
+        ui.colored_label(egui::Color32::from_rgb(200, 80, 80), error);
+    }
+}
+
+fn format_message(msg: &p2p_comm_core::ChatMessage) -> String {
+    let who = match msg.direction {
+        p2p_comm_core::Direction::Outgoing => "Me",
+        p2p_comm_core::Direction::Incoming => "Peer",
+    };
+    let fail = if msg.failed { " [failed]" } else { "" };
+    format!("{} {who}: {}{fail}", format_time(msg.timestamp), msg.content)
+}
+
+fn format_time(unix_millis: u64) -> String {
+    let secs = unix_millis / 1000;
+    let h = (secs / 3600) % 24;
+    let m = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{h:02}:{m:02}:{s:02}")
 }
 
 fn status_text(status: Option<PeerStatus>) -> &'static str {

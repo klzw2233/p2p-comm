@@ -2,7 +2,7 @@
 
 ## 项目状态
 
-**当前阶段**: issue #4 拨号 + 侧边栏认人已实现。解锁后可拨 64 hex Peer ID / 本地昵称，入站 Peer 进侧边栏（无昵称显示短 ID），昵称落盘 `nicknames.json`。尚未收发文字。
+**当前阶段**: issue #5 文字收发 + 加密聊天记录已实现。已连接 Peer 可互发文字（长度前缀 JSON）；记录按 Peer 加密 JSONL 落盘。尚未做文件/通话。
 
 栈评估（2026-09-06）: [notes/2026-09-06-stack-architecture-review.md](./notes/2026-09-06-stack-architecture-review.md)
 
@@ -54,7 +54,7 @@ cargo run -p p2p-comm-gui
 1. ~~等 P2PCore PR #22 合入 main~~ 已切到 `main`
 2. ~~开第一张 spec issue~~ issue #1
 3. ~~搭建 CI~~ `.github/workflows/ci.yml`
-4. 按 issue #1 实现（顺序：~~身份解锁~~ → ~~拨号/侧边栏~~ → 存储/文字 → GUI → 文件 → 语音 → 视频）
+4. 按 issue #1 实现（顺序：~~身份解锁~~ → ~~拨号/侧边栏~~ → ~~存储/文字~~ → 文件 → 语音 → 视频）
 5. 朋友异机验收
 
 ## 已知约束
