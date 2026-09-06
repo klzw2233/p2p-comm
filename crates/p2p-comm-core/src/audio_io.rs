@@ -12,52 +12,97 @@ use tokio::sync::mpsc;
 use crate::audio::{
     pack_audio, unpack_audio, AudioDecoder, AudioEncoder, FRAME_SAMPLES, SAMPLE_RATE,
 };
+use crate::frame::MediaType;
+use crate::video::{VideoDecoder, VideoFrame};
+use crate::video_io;
 
 const MAX_QUEUE: usize = FRAME_SAMPLES * 10; // ~200 ms
 
-/// Live default-device audio for one call. Dropping stops capture/playback.
+/// Live default-device media for one call. Dropping stops capture/playback and the camera.
 pub struct LiveMedia {
     stop: Arc<AtomicBool>,
     playback: Arc<Mutex<VecDeque<i16>>>,
     decoder: AudioDecoder,
+    video_decoder: Option<VideoDecoder>,
+    video_frame: Arc<Mutex<Option<VideoFrame>>>,
     input: Option<Stream>,
     output: Option<Stream>,
     encode: Option<std::thread::JoinHandle<()>>,
+    video: Option<std::thread::JoinHandle<()>>,
 }
 
 impl LiveMedia {
-    /// Open default mic + speaker and start the encode thread.
-    /// `None` if there is no default device, the format is unsupported, or Opus init failed.
+    /// Open default mic + speaker. Camera opens only for [`MediaType::AudioVideo`].
+    /// Audio I/O is best-effort; video decode still starts if the mic is missing.
+    /// `None` only if Opus init failed, or an audio-only call has no devices.
     #[must_use]
-    pub fn start(dgram_tx: mpsc::UnboundedSender<Vec<u8>>) -> Option<Self> {
+    pub fn start(
+        dgram_tx: mpsc::UnboundedSender<Vec<u8>>,
+        media: MediaType,
+        max_nal_len: usize,
+    ) -> Option<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let capture = Arc::new(Mutex::new(VecDeque::<i16>::new()));
         let playback = Arc::new(Mutex::new(VecDeque::<i16>::new()));
         let decoder = AudioDecoder::new().ok()?;
 
         let host = cpal::default_host();
-        let input = open_input(&host, Arc::clone(&capture))?;
-        let output = open_output(&host, Arc::clone(&playback))?;
+        let input = open_input(&host, Arc::clone(&capture));
+        let output = open_output(&host, Arc::clone(&playback));
 
-        let stop_enc = Arc::clone(&stop);
-        let cap_enc = Arc::clone(&capture);
-        let encode = std::thread::Builder::new()
-            .name("p2p-audio-enc".into())
-            .spawn(move || encode_loop(&stop_enc, &cap_enc, &dgram_tx))
-            .ok()?;
+        let encode = if input.is_some() {
+            let stop_enc = Arc::clone(&stop);
+            let cap_enc = Arc::clone(&capture);
+            let audio_tx = dgram_tx.clone();
+            std::thread::Builder::new()
+                .name("p2p-audio-enc".into())
+                .spawn(move || encode_loop(&stop_enc, &cap_enc, &audio_tx))
+                .ok()
+        } else {
+            None
+        };
+
+        let (video_decoder, video_frame, video) = if media == MediaType::AudioVideo {
+            let video_decoder = VideoDecoder::new().ok();
+            let video_frame = Arc::new(Mutex::new(None));
+            let video = video_decoder
+                .as_ref()
+                .and_then(|_| video_io::start_capture(Arc::clone(&stop), dgram_tx, max_nal_len));
+            (video_decoder, video_frame, video)
+        } else {
+            (None, Arc::new(Mutex::new(None)), None)
+        };
+
+        if media == MediaType::Audio && input.is_none() && output.is_none() {
+            return None;
+        }
 
         Some(Self {
             stop,
             playback,
             decoder,
-            input: Some(input),
-            output: Some(output),
-            encode: Some(encode),
+            video_decoder,
+            video_frame,
+            input,
+            output,
+            encode,
+            video,
         })
     }
 
-    /// Decode one incoming datagram onto the playback queue.
+    /// Decode one incoming datagram onto the playback queue or latest video frame.
     pub fn push_datagram(&mut self, bytes: &[u8]) {
+        if bytes.first() == Some(&crate::video::VIDEO_TYPE) {
+            let Some(dec) = self.video_decoder.as_mut() else {
+                return;
+            };
+            if let Some(frame) = dec.push_datagram(bytes) {
+                if let Ok(mut slot) = self.video_frame.lock() {
+                    *slot = Some(frame);
+                }
+            }
+            return;
+        }
         let Some((_, payload)) = unpack_audio(bytes) else {
             return;
         };
@@ -71,6 +116,12 @@ impl LiveMedia {
             }
         }
     }
+
+    /// Take the latest decoded remote video frame, if any.
+    #[must_use]
+    pub fn take_video_frame(&self) -> Option<VideoFrame> {
+        self.video_frame.lock().ok()?.take()
+    }
 }
 
 impl Drop for LiveMedia {
@@ -80,6 +131,10 @@ impl Drop for LiveMedia {
         self.output.take();
         if let Some(h) = self.encode.take() {
             let _ = h.join();
+        }
+        if let Some(h) = self.video.take() {
+            // ponytail: detached join so hangup isn't blocked on camera.frame(); join-with-timeout if LED must go off first.
+            let _ = h;
         }
     }
 }
@@ -233,14 +288,16 @@ where
 }
 
 // ponytail: linear resample, swap for a proper resampler if 44.1↔48 quality matters.
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn resample(mono: &[i16], from: u32, to: u32) -> Vec<i16> {
     if from == to || from == 0 || mono.is_empty() {
         return mono.to_vec();
     }
-    let out_len = (mono.len() as u64)
-        .saturating_mul(u64::from(to))
-        / u64::from(from);
+    let out_len = (mono.len() as u64).saturating_mul(u64::from(to)) / u64::from(from);
     let out_len = usize::try_from(out_len).unwrap_or(0);
     if out_len == 0 {
         return Vec::new();
@@ -269,9 +326,7 @@ where
     let needed = if dst_rate == 0 {
         frames
     } else {
-        let n = (frames as u64)
-            .saturating_mul(u64::from(SAMPLE_RATE))
-            / u64::from(dst_rate);
+        let n = (frames as u64).saturating_mul(u64::from(SAMPLE_RATE)) / u64::from(dst_rate);
         usize::try_from(n).unwrap_or(frames)
     };
     let mut src = Vec::with_capacity(needed);

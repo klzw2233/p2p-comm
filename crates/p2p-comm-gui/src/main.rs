@@ -2,7 +2,7 @@ use eframe::egui;
 
 use p2p_comm_core::{
     default_data_dir, has_stored_identity, short_id, CallPhase, CallResult, Error, FileProgress,
-    Node, PeerStatus, PendingInvite, PendingOffer, Snapshot, TransferStatus,
+    MediaType, Node, PeerStatus, PendingInvite, PendingOffer, Snapshot, TransferStatus, VideoFrame,
 };
 
 fn main() -> eframe::Result {
@@ -46,6 +46,7 @@ struct MainState {
     nickname_error: Option<String>,
     compose: String,
     send_error: Option<String>,
+    video_tex: Option<egui::TextureHandle>,
 }
 
 struct App {
@@ -76,6 +77,7 @@ impl eframe::App for App {
                             nickname_error: None,
                             compose: String::new(),
                             send_error: None,
+                            video_tex: None,
                         }))),
                         Err(err) => {
                             form.error = Some(error_text(err).to_owned());
@@ -88,6 +90,9 @@ impl eframe::App for App {
             }
             Screen::Main(main) => {
                 let changed = main.node.poll();
+                if let Some(frame) = main.node.take_video_frame() {
+                    apply_video_frame(ctx, main, &frame);
+                }
                 let snap = main.node.snapshot();
                 let transferring = snap.transfer.as_ref().is_some_and(|t| {
                     matches!(
@@ -109,6 +114,9 @@ impl eframe::App for App {
                     ctx.request_repaint_after(std::time::Duration::from_millis(200));
                 }
                 main_ui(ctx, main, &snap);
+                if snap.call.is_none() {
+                    main.video_tex = None;
+                }
                 None
             }
         };
@@ -278,6 +286,7 @@ fn chat_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
     ui.label(format!("Peer: {}", main.node.display_name(peer)));
     ui.label(format!("Peer ID: {peer}"));
     ui.label(status_text(snap.selected_status));
+    video_pane(ui, main, snap, peer);
     call_bar(ui, main, snap, peer);
     ui.horizontal(|ui| {
         ui.label("Nickname");
@@ -364,7 +373,11 @@ fn transfer_ui(ui: &mut egui::Ui, xfer: &FileProgress) {
         p2p_comm_core::Direction::Outgoing => "↑",
         p2p_comm_core::Direction::Incoming => "↓",
     };
-    ui.label(format!("{arrow} {} ({})", xfer.name, format_size(xfer.size)));
+    ui.label(format!(
+        "{arrow} {} ({})",
+        xfer.name,
+        format_size(xfer.size)
+    ));
     let fraction = if xfer.size == 0 {
         1.0
     } else {
@@ -402,32 +415,73 @@ fn offer_window(ctx: &egui::Context, main: &mut MainState, offer: &PendingOffer)
         });
 }
 
+fn video_pane(ui: &mut egui::Ui, main: &MainState, snap: &Snapshot, peer: &str) {
+    let Some(call) = snap.call.as_ref() else {
+        return;
+    };
+    if call.peer_id_hex != peer
+        || call.media != MediaType::AudioVideo
+        || call.phase != CallPhase::Active
+    {
+        return;
+    }
+    if let Some(tex) = &main.video_tex {
+        let available = ui.available_width();
+        let height = available * 480.0 / 640.0;
+        ui.add(egui::Image::new(tex).fit_to_exact_size(egui::vec2(available, height)));
+    } else {
+        ui.label("Waiting for video…");
+    }
+}
+
+fn apply_video_frame(ctx: &egui::Context, main: &mut MainState, frame: &VideoFrame) {
+    let size = [frame.width as usize, frame.height as usize];
+    let image = egui::ColorImage::from_rgb(size, &frame.rgb);
+    match &mut main.video_tex {
+        Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
+        None => {
+            main.video_tex =
+                Some(ctx.load_texture("remote-video", image, egui::TextureOptions::LINEAR));
+        }
+    }
+}
+
 fn call_bar(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot, peer: &str) {
-    ui.horizontal(|ui| {
-        match snap.call.as_ref() {
-            Some(call) if call.peer_id_hex == peer => {
-                let label = match call.phase {
-                    CallPhase::Outgoing => "Calling…",
-                    CallPhase::Incoming => "Incoming call",
-                    CallPhase::Active => "In call",
-                };
-                ui.colored_label(egui::Color32::from_rgb(90, 160, 90), label);
-                if ui.button("Hang up").clicked() {
-                    main.node.hangup();
+    ui.horizontal(|ui| match snap.call.as_ref() {
+        Some(call) if call.peer_id_hex == peer => {
+            let label = match (call.phase, call.media) {
+                (CallPhase::Outgoing, MediaType::AudioVideo) => "Calling (video)…",
+                (CallPhase::Outgoing, MediaType::Audio) => "Calling…",
+                (CallPhase::Incoming, MediaType::AudioVideo) => "Incoming video call",
+                (CallPhase::Incoming, MediaType::Audio) => "Incoming call",
+                (CallPhase::Active, MediaType::AudioVideo) => "In video call",
+                (CallPhase::Active, MediaType::Audio) => "In call",
+            };
+            ui.colored_label(egui::Color32::from_rgb(90, 160, 90), label);
+            if ui.button("Hang up").clicked() {
+                main.node.hangup();
+                main.video_tex = None;
+            }
+        }
+        Some(_) => {
+            ui.label("Busy on another call");
+        }
+        None => {
+            let connected = snap.selected_status == Some(PeerStatus::Connected);
+            if ui
+                .add_enabled(connected, egui::Button::new("Voice"))
+                .clicked()
+            {
+                if let Err(err) = main.node.invite_audio(peer) {
+                    main.send_error = Some(error_text(err).to_owned());
                 }
             }
-            Some(_) => {
-                ui.label("Busy on another call");
-            }
-            None => {
-                let connected = snap.selected_status == Some(PeerStatus::Connected);
-                if ui
-                    .add_enabled(connected, egui::Button::new("Voice"))
-                    .clicked()
-                {
-                    if let Err(err) = main.node.invite_audio(peer) {
-                        main.send_error = Some(error_text(err).to_owned());
-                    }
+            if ui
+                .add_enabled(connected, egui::Button::new("Video"))
+                .clicked()
+            {
+                if let Err(err) = main.node.invite_video(peer) {
+                    main.send_error = Some(error_text(err).to_owned());
                 }
             }
         }
@@ -448,8 +502,13 @@ fn invite_window(ctx: &egui::Context, main: &mut MainState, invite: &PendingInvi
         .resizable(false)
         .show(ctx, |ui| {
             ui.label(format!(
-                "{} is calling (voice).",
-                main.node.display_name(&peer)
+                "{} is calling ({}).",
+                main.node.display_name(&peer),
+                if invite.media == MediaType::AudioVideo {
+                    "video"
+                } else {
+                    "voice"
+                }
             ));
             ui.horizontal(|ui| {
                 if ui.button("Accept").clicked() {
@@ -480,7 +539,11 @@ fn format_message(msg: &p2p_comm_core::ChatMessage) -> String {
         p2p_comm_core::Direction::Incoming => "Peer",
     };
     let fail = if msg.failed { " [failed]" } else { "" };
-    format!("{} {who}: {}{fail}", format_time(msg.timestamp), msg.content)
+    format!(
+        "{} {who}: {}{fail}",
+        format_time(msg.timestamp),
+        msg.content
+    )
 }
 
 fn format_time(unix_millis: u64) -> String {

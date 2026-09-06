@@ -248,6 +248,21 @@ mod tests {
     }
 
     #[test]
+    fn call_invite_audiovideo_roundtrip() {
+        let frame = encode_call_invite(MediaType::AudioVideo);
+        let json = std::str::from_utf8(&frame[4..]).expect("utf8");
+        assert_eq!(json, r#"{"type":"CallInvite","media":"AudioVideo"}"#);
+        let (decoded, n) = decode_frame(&frame).expect("decode");
+        assert_eq!(n, frame.len());
+        assert_eq!(
+            decoded,
+            Decoded::CallInvite {
+                media: MediaType::AudioVideo
+            }
+        );
+    }
+
+    #[test]
     fn truncated_frame_is_invalid() {
         assert_eq!(decode_frame(&[1, 0]).unwrap_err(), Error::InvalidFrame);
         let mut frame = encode_text("hi", 1);

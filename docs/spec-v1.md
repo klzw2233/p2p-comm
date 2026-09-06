@@ -29,17 +29,14 @@
 p2p-comm/
 ├── crates/
 │   ├── p2p-comm-core/  # 无头核心，零 GUI 依赖
-│   │   ├── session.rs       # Session 生命周期管理
-│   │   ├── messaging.rs     # 文字消息收发
-│   │   ├── file_transfer.rs # 文件传输（分块 + 进度）
-│   │   ├── call.rs          # 通话信令 + 媒体流
-│   │   ├── storage.rs       # 加密聊天记录 + 昵称表
-│   │   └── crypto.rs        # 密钥派生（从身份密码）
-│   └── p2p-comm-gui/   # eframe 前端
-│       ├── main.rs          # 窗口 + 路由
-│       ├── sidebar.rs       # 昵称列表
-│       ├── chat_view.rs     # 消息 + 文件 + 通话 UI
-│       └── settings.rs      # 身份密码输入
+│   │   ├── node.rs          # Session / 文字 / 文件 / 通话状态机
+│   │   ├── frame.rs         # 可靠流帧
+│   │   ├── audio.rs         # Opus + 音频数据报
+│   │   ├── video.rs         # H.264 + 视频数据报
+│   │   ├── audio_io.rs      # 默认麦/扬声器
+│   │   ├── video_io.rs      # 默认摄像头
+│   │   ├── chatlog.rs / nicknames.rs / roster.rs / inbox.rs
+│   └── p2p-comm-gui/   # eframe 前端（单文件 main.rs）
 ```
 
 ## 功能规格
@@ -164,7 +161,7 @@ A/B: CallEnd
 - 分辨率: 640×480
 - 帧率: 15fps
 - 编码器: OpenH264（`openh264` crate），`max_slice_len` 设为 `Session::max_datagram_size().unwrap_or(1200) - 9`
-- I/O: `nokhwa`（系统默认摄像头）
+- I/O: `nokhwa`（系统默认摄像头；编码始终 640×480，设备不必提供该精确模式）
 - 一帧可以发出多个 DATAGRAM（多个 NAL）。超 MTU 的 NAL 丢弃该 slice，不在应用层重组
 - 丢包导致花屏/冻结是 v1 可接受行为；不做 FEC/NACK。升级路径：一帧一条 QUIC 单向流、过时 reset（MoQ 风格）—— v1 不做
 
@@ -202,10 +199,10 @@ A/B: CallEnd
 ## 验收标准
 
 1. ✅ CI 通过（Linux + Windows 编译 + 单元测试）
-2. ✅ 朋友异机测试：文字消息双向收发
-3. ✅ 朋友异机测试：文件传输（发送 + 接收 + 进度条）
-4. ✅ 朋友异机测试：语音通话（延迟 < 500ms，无明显卡顿）
-5. ✅ 朋友异机测试：视频通话（画面流畅，音视频同步）
+2. 朋友异机测试：文字消息双向收发
+3. 朋友异机测试：文件传输（发送 + 接收 + 进度条）
+4. 朋友异机测试：语音通话（延迟 < 500ms，无明显卡顿）
+5. 朋友异机测试：视频通话（画面流畅，音视频同步）
 6. ✅ 聊天记录加密落盘 + 重启后正确加载
 7. ✅ 昵称管理（设置/显示/删除）
 
@@ -215,7 +212,7 @@ A/B: CallEnd
 2. **GUI**: 侧边栏 + 聊天视图 + 文字消息显示/发送
 3. **文件传输**: 核心逻辑 + GUI 进度条
 4. ~~**语音通话**: 核心逻辑 + GUI 通话 UI~~ 已合入（PR #17 / issue #7）
-5. **视频通话**: 核心逻辑 + GUI 视频显示
+5. ~~**视频通话**: 核心逻辑 + GUI 视频显示~~ 已合入（PR #18 / issue #8）
 6. **打磨**: 错误处理 + 日志 + 文档
 
 每个阶段都先通过 CI，再找朋友测试。
