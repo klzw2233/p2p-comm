@@ -1,6 +1,14 @@
 use std::path::{Path, PathBuf};
 
-use p2p_trust::{FileKeyStore, IdentityKey, KeyStore, TrustError};
+use p2p_trust::{FileKeyStore, IdentityKey, KeyStore, PeerId, TrustError};
+
+mod nicknames;
+mod node;
+mod roster;
+
+pub use nicknames::{resolve_dial, short_id, NicknameStore};
+pub use node::{Node, SidebarItem, Snapshot};
+pub use roster::{ChatError, PeerStatus};
 
 /// Unlocked local identity. The secret seed is not retained.
 #[derive(Debug)]
@@ -16,7 +24,7 @@ impl Identity {
     }
 }
 
-/// Failures when creating or unlocking a local identity.
+/// Failures when creating or unlocking a local identity, or managing nicknames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     EmptyPassword,
@@ -24,6 +32,11 @@ pub enum Error {
     DataDirUnavailable,
     Io,
     CorruptStore,
+    InvalidPeerId,
+    UnknownNickname,
+    EmptyNickname,
+    DuplicateNickname,
+    Bind,
 }
 
 /// Platform data directory (`~/.local/share/p2p-comm` on Linux, `%APPDATA%\p2p-comm` on Windows).
@@ -70,24 +83,28 @@ pub fn unlock(password: &str) -> Result<Identity, Error> {
 /// * [`Error::Io`] if the directory or key file cannot be written
 /// * [`Error::CorruptStore`] if the key file is malformed
 pub fn unlock_in(dir: &Path, password: &str) -> Result<Identity, Error> {
-    if password.is_empty() {
-        return Err(Error::EmptyPassword);
-    }
-    std::fs::create_dir_all(dir).map_err(|_| Error::Io)?;
-    let mut store = FileKeyStore::new(dir, password.as_bytes());
-    let key = if let Some(key) = store.load().map_err(map_trust)? {
-        key
-    } else {
-        let key = IdentityKey::generate();
-        store.save(&key).map_err(map_trust)?;
-        key
-    };
+    let key = unlock_key(dir, password)?;
     Ok(Identity {
         peer_id_hex: to_hex(key.peer_id().as_bytes()),
     })
 }
 
-fn map_trust(err: TrustError) -> Error {
+pub(crate) fn unlock_key(dir: &Path, password: &str) -> Result<IdentityKey, Error> {
+    if password.is_empty() {
+        return Err(Error::EmptyPassword);
+    }
+    std::fs::create_dir_all(dir).map_err(|_| Error::Io)?;
+    let mut store = FileKeyStore::new(dir, password.as_bytes());
+    if let Some(key) = store.load().map_err(map_trust)? {
+        Ok(key)
+    } else {
+        let key = IdentityKey::generate();
+        store.save(&key).map_err(map_trust)?;
+        Ok(key)
+    }
+}
+
+pub(crate) fn map_trust(err: TrustError) -> Error {
     match err {
         TrustError::WrongPassword => Error::WrongPassword,
         TrustError::Io => Error::Io,
@@ -97,7 +114,7 @@ fn map_trust(err: TrustError) -> Error {
     }
 }
 
-fn to_hex(bytes: &[u8]) -> String {
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -106,21 +123,50 @@ fn to_hex(bytes: &[u8]) -> String {
     out
 }
 
+pub(crate) fn looks_like_hex_id(input: &str) -> bool {
+    input.len() == 64 && input.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+pub(crate) fn parse_peer_id_hex(input: &str) -> Result<(PeerId, String), Error> {
+    if !looks_like_hex_id(input) {
+        return Err(Error::InvalidPeerId);
+    }
+    let mut bytes = [0u8; 32];
+    for (i, chunk) in input.as_bytes().chunks_exact(2).enumerate() {
+        let slot = [chunk[0], chunk[1]];
+        let hex = std::str::from_utf8(&slot).map_err(|_| Error::InvalidPeerId)?;
+        bytes[i] = u8::from_str_radix(hex, 16).map_err(|_| Error::InvalidPeerId)?;
+    }
+    let peer = PeerId::from_bytes(bytes).map_err(|_| Error::InvalidPeerId)?;
+    Ok((peer, to_hex(&bytes)))
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests_support {
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::*;
+    use p2p_trust::IdentityKey;
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
-    fn temp_path() -> PathBuf {
+    pub(crate) fn temp_path() -> PathBuf {
         std::env::temp_dir().join(format!(
             "p2p-comm-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, Ordering::Relaxed)
         ))
     }
+
+    pub(crate) fn valid_peer_hex() -> String {
+        crate::to_hex(IdentityKey::generate().peer_id().as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tests_support::temp_path;
 
     #[test]
     fn empty_password_is_rejected() {
