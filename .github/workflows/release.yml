@@ -1,0 +1,71 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Auth private git deps
+        run: git config --global url."https://x-access-token:${{ secrets.P2PCORE_TOKEN }}@github.com/klzw2233/P2PCore".insteadOf "https://github.com/klzw2233/P2PCore"
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev libasound2-dev libv4l-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+          cache-all-crates: true
+      - run: cargo build --release --target ${{ matrix.target }} -p p2p-comm-gui
+      - name: Package
+        shell: bash
+        run: |
+          BIN=target/${{ matrix.target }}/release/p2p-comm-gui
+          [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          NAME=p2p-comm-gui-${GITHUB_REF_NAME}-${{ matrix.target }}
+          mkdir -p "$NAME"
+          cp "$BIN" "$NAME/"
+          tar czf "$NAME.tar.gz" "$NAME"
+          sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p2p-comm-gui-${{ matrix.target }}
+          path: |
+            p2p-comm-gui-*.tar.gz
+            p2p-comm-gui-*.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            p2p-comm-gui-*.tar.gz
+            p2p-comm-gui-*.tar.gz.sha256
+          generate_release_notes: true

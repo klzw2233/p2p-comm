@@ -30,6 +30,8 @@ GitHub Actions 矩阵（`.github/workflows/ci.yml`）:
 
 手动编 Win10 GUI（`.github/workflows/win10-gui.yml`）: Actions → Win10 GUI → Run workflow，产物 `p2p-comm-gui.exe`。
 
+推送 `v*` tag 触发 `.github/workflows/release.yml`：Linux + Windows `--release` 编 GUI，打包 tar.gz + sha256，创建 GitHub Release。
+
 需要配置 secret: `P2PCORE_TOKEN`（用于拉取私有 P2PCore 依赖）
 
 ## 文档要求

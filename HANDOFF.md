@@ -22,6 +22,8 @@ cargo run -p p2p-comm-gui
 
 Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 
+发布：`git tag vX.Y.Z && git push origin vX.Y.Z`，Actions 编 Linux/Windows 并挂到 GitHub Release。
+
 ## 架构要点
 
 - **workspace 两 crate**: `p2p-comm-core`（无头核心）+ `p2p-comm-gui`（eframe 0.30 前端）
