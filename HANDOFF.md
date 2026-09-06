@@ -35,7 +35,7 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 
 ## 已锁定决定（ADR）
 
-暂无独立 ADR 文件。协议真相在 issue #1。实现前若再改运输/KDF，再补 `docs/adr/`。
+- [ADR-0001](docs/adr/0001-defer-macos.md): macOS 不并进 issue #1；#1 做完文件/语音/视频后再开独立 spec。协议真相仍在 issue #1。
 
 ## 范围边界
 
@@ -45,6 +45,7 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 - 加密聊天记录落盘
 
 **不做**:
+- macOS（#1 之后另开 spec，见 ADR-0001）
 - 移动端
 - 回声消除（文档写明用耳机）
 - 设备选择（v1 只抓默认设备）
@@ -60,6 +61,7 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 3. ~~搭建 CI~~ `.github/workflows/ci.yml`
 4. 按 issue #1 实现（顺序：~~身份解锁~~ → ~~拨号/侧边栏~~ → ~~存储/文字~~ → 文件 → 语音 → 视频）
 5. 朋友异机验收
+6. macOS：#1 完成后再开独立 spec（ADR-0001）
 
 ## 已知约束
 
