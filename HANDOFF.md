@@ -20,6 +20,8 @@ cargo build
 cargo run -p p2p-comm-gui
 ```
 
+Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
+
 ## 架构要点
 
 - **workspace 两 crate**: `p2p-comm-core`（无头核心）+ `p2p-comm-gui`（eframe 0.30 前端）

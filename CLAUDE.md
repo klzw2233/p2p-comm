@@ -24,9 +24,11 @@
 
 ## CI 配置
 
-GitHub Actions 矩阵:
+GitHub Actions 矩阵（`.github/workflows/ci.yml`）:
 - `ubuntu-latest`
 - `windows-latest`
+
+手动编 Win10 GUI（`.github/workflows/win10-gui.yml`）: Actions → Win10 GUI → Run workflow，产物 `p2p-comm-gui.exe`。
 
 需要配置 secret: `P2PCORE_TOKEN`（用于拉取私有 P2PCore 依赖）
 
