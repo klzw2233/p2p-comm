@@ -1,7 +1,8 @@
 use eframe::egui;
 
 use p2p_comm_core::{
-    default_data_dir, has_stored_identity, short_id, Error, Node, PeerStatus, Snapshot,
+    default_data_dir, has_stored_identity, short_id, Error, FileProgress, Node, PeerStatus,
+    PendingOffer, Snapshot, TransferStatus,
 };
 
 fn main() -> eframe::Result {
@@ -88,7 +89,15 @@ impl eframe::App for App {
             Screen::Main(main) => {
                 let changed = main.node.poll();
                 let snap = main.node.snapshot();
+                let transferring = snap.transfer.as_ref().is_some_and(|t| {
+                    matches!(
+                        t.status,
+                        TransferStatus::Offered | TransferStatus::Transferring
+                    )
+                });
                 if changed
+                    || transferring
+                    || snap.pending_offer.is_some()
                     || snap.selected_status == Some(PeerStatus::Connecting)
                     || snap.selected_status == Some(PeerStatus::Connected)
                 {
@@ -172,6 +181,9 @@ fn main_ui(ctx: &egui::Context, main: &mut MainState, snap: &Snapshot) {
         .default_width(220.0)
         .show(ctx, |ui| sidebar_ui(ui, main, snap));
     egui::CentralPanel::default().show(ctx, |ui| chat_ui(ui, main, snap));
+    if let Some(offer) = &snap.pending_offer {
+        offer_window(ctx, main, offer);
+    }
 }
 
 fn sidebar_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
@@ -290,6 +302,10 @@ fn chat_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
         }
     }
     ui.separator();
+    if let Some(xfer) = &snap.transfer {
+        transfer_ui(ui, xfer);
+        ui.separator();
+    }
     egui::ScrollArea::vertical()
         .stick_to_bottom(true)
         .max_height(ui.available_height() - 40.0)
@@ -302,7 +318,7 @@ fn chat_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
         let edit = ui.add(
             egui::TextEdit::singleline(&mut main.compose)
                 .hint_text("message")
-                .desired_width(ui.available_width() - 70.0),
+                .desired_width(ui.available_width() - 150.0),
         );
         let send = ui.button("Send").clicked()
             || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
@@ -315,9 +331,74 @@ fn chat_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
                 Err(err) => main.send_error = Some(error_text(err).to_owned()),
             }
         }
+        if ui.button("Send file").clicked() {
+            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                if let Err(err) = main.node.send_file(peer, &path) {
+                    main.send_error = Some(error_text(err).to_owned());
+                }
+            }
+        }
     });
     if let Some(error) = &main.send_error {
         ui.colored_label(egui::Color32::from_rgb(200, 80, 80), error);
+    }
+}
+
+fn transfer_ui(ui: &mut egui::Ui, xfer: &FileProgress) {
+    let (status, color) = match xfer.status {
+        TransferStatus::Offered => ("Offering…", egui::Color32::GRAY),
+        TransferStatus::Transferring => ("Transferring…", egui::Color32::LIGHT_BLUE),
+        TransferStatus::Complete => ("Complete", egui::Color32::from_rgb(90, 160, 90)),
+        TransferStatus::Rejected => ("Rejected", egui::Color32::from_rgb(200, 80, 80)),
+        TransferStatus::Failed => ("Failed", egui::Color32::from_rgb(200, 80, 80)),
+    };
+    let arrow = match xfer.direction {
+        p2p_comm_core::Direction::Outgoing => "↑",
+        p2p_comm_core::Direction::Incoming => "↓",
+    };
+    ui.label(format!("{arrow} {} ({})", xfer.name, format_size(xfer.size)));
+    let fraction = if xfer.size == 0 {
+        1.0
+    } else {
+        (xfer.transferred as f32 / xfer.size as f32).clamp(0.0, 1.0)
+    };
+    ui.add(
+        egui::ProgressBar::new(fraction)
+            .text(format!("{status} — {}", format_size(xfer.transferred)))
+            .fill(color),
+    );
+}
+
+fn offer_window(ctx: &egui::Context, main: &mut MainState, offer: &PendingOffer) {
+    let peer = offer.peer_id_hex.clone();
+    egui::Window::new("Incoming file")
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "{} wants to send a file.",
+                main.node.display_name(&peer)
+            ));
+            ui.label(format!("Name: {}", offer.name));
+            ui.label(format!("Size: {}", format_size(offer.size)));
+            ui.horizontal(|ui| {
+                if ui.button("Accept").clicked() {
+                    main.node.accept_file(&peer);
+                }
+                if ui.button("Reject").clicked() {
+                    main.node.reject_file(&peer);
+                }
+            });
+        });
+}
+
+fn format_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    match bytes {
+        0..=1023 => format!("{bytes} B"),
+        _ if bytes < 64 * KIB => format!("{:.1} KiB", bytes as f64 / KIB as f64),
+        _ if bytes < 1024 * 1024 => format!("{:.0} KiB", bytes as f64 / KIB as f64),
+        _ => format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0)),
     }
 }
 

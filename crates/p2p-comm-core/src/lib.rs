@@ -16,7 +16,7 @@ pub use frame::{
 };
 pub use inbox::{ChatMessage, Direction};
 pub use nicknames::{resolve_dial, short_id, NicknameStore};
-pub use node::{FileProgress, Node, SidebarItem, Snapshot, TransferStatus};
+pub use node::{FileProgress, Node, PendingOffer, SidebarItem, Snapshot, TransferStatus};
 pub use roster::{ChatError, PeerStatus};
 
 /// Unlocked local identity. The secret seed is not retained.
