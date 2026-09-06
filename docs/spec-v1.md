@@ -21,7 +21,7 @@
 - **音频编解码**: opus 0.4
 - **音频 I/O**: cpal 0.18
 - **数据目录**: dirs 6.0（Linux `~/.local/share/p2p-comm`，Windows `%APPDATA%\p2p-comm`）
-- **平台**: Linux + Windows 10（CI 矩阵验证编译通过）
+- **平台**: Linux + Windows 10（CI 矩阵验证编译通过）。macOS 不进 v1，见 ADR-0001。
 
 ## 架构
 
@@ -190,6 +190,7 @@ A/B: CallEnd
 
 ## 范围外（v1 不做）
 
+- macOS 客户端（推迟到 #1 完成后的独立 spec；见 ADR-0001）
 - 回声消除（文档写"请用耳机"）
 - 设备选择（只用系统默认）
 - 断点续传

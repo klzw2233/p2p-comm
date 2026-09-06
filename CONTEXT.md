@@ -28,7 +28,7 @@
 └─────────────────────┘
 ```
 
-权威规格: GitHub issue #1。`docs/spec-v1.md` 是同步副本。栈评估: `notes/2026-09-06-stack-architecture-review.md`。
+权威规格: GitHub issue #1。`docs/spec-v1.md` 是同步副本。栈评估: `notes/2026-09-06-stack-architecture-review.md`。Mac 不进 v1：见 [ADR-0001](docs/adr/0001-defer-macos.md)。
 
 ## 范围
 
@@ -40,9 +40,10 @@
 - 本地昵称表（JSON 存储）
 - 加密聊天记录（JSONL；Argon2id 派生主密钥，再 HKDF 按 Peer 分密钥，ChaCha20-Poly1305）
 - 多会话 UI（侧边栏昵称列表，并行聊天）
-- 平台: Linux + Windows 10
+- 平台: Linux + Windows 10（macOS 见 ADR-0001，#1 之后另开 spec）
 
 **范围外**:
+- macOS 客户端（推迟到 #1 完成后的独立 spec；不是架构限制）
 - 移动端（安卓/iOS）
 - 回声消除（文档写明"请用耳机"）
 - 设备选择（v1 只抓系统默认设备）
