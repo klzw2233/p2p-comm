@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
+/// Call media requested in [`WireMessage::CallInvite`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MediaType {
+    Audio,
+    AudioVideo,
+}
+
 /// Wire JSON. Unknown variants must not panic (`#[serde(other)]`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -11,6 +18,10 @@ pub enum WireMessage {
     FileAccept,
     FileReject,
     FileChunk { offset: u64, data: String },
+    CallInvite { media: MediaType },
+    CallAccept,
+    CallReject,
+    CallEnd,
     #[serde(other)]
     Unknown,
 }
@@ -27,6 +38,10 @@ pub enum Decoded {
     FileAccept,
     FileReject,
     FileChunk { offset: u64, data: Vec<u8> },
+    CallInvite { media: MediaType },
+    CallAccept,
+    CallReject,
+    CallEnd,
     Ignored,
 }
 
@@ -72,6 +87,30 @@ pub fn encode_file_chunk(offset: u64, data: &[u8]) -> Vec<u8> {
     })
 }
 
+/// Encode a `CallInvite`.
+#[must_use]
+pub fn encode_call_invite(media: MediaType) -> Vec<u8> {
+    encode_json(&WireMessage::CallInvite { media })
+}
+
+/// Encode a `CallAccept` (no fields).
+#[must_use]
+pub fn encode_call_accept() -> Vec<u8> {
+    encode_json(&WireMessage::CallAccept)
+}
+
+/// Encode a `CallReject` (no fields).
+#[must_use]
+pub fn encode_call_reject() -> Vec<u8> {
+    encode_json(&WireMessage::CallReject)
+}
+
+/// Encode a `CallEnd` (no fields).
+#[must_use]
+pub fn encode_call_end() -> Vec<u8> {
+    encode_json(&WireMessage::CallEnd)
+}
+
 fn encode_json(msg: &WireMessage) -> Vec<u8> {
     let json = serde_json::to_vec(msg).unwrap_or_else(|_| br#"{"type":"Text","content":"","timestamp":0}"#.to_vec());
     let len = u32::try_from(json.len()).unwrap_or(u32::MAX);
@@ -110,6 +149,10 @@ pub fn decode_frame(bytes: &[u8]) -> Result<(Decoded, usize), Error> {
             Some(data) => Decoded::FileChunk { offset, data },
             None => Decoded::Ignored,
         },
+        Ok(WireMessage::CallInvite { media }) => Decoded::CallInvite { media },
+        Ok(WireMessage::CallAccept) => Decoded::CallAccept,
+        Ok(WireMessage::CallReject) => Decoded::CallReject,
+        Ok(WireMessage::CallEnd) => Decoded::CallEnd,
         Ok(WireMessage::Unknown) | Err(_) => Decoded::Ignored,
     };
     Ok((decoded, total))
@@ -160,7 +203,7 @@ mod tests {
 
     #[test]
     fn unknown_variant_is_ignored() {
-        let json = br#"{"type":"CallInvite","media":"Audio"}"#;
+        let json = br#"{"type":"NotARealType"}"#;
         let mut frame = Vec::new();
         let len = u32::try_from(json.len()).expect("tiny");
         frame.extend_from_slice(&len.to_le_bytes());
@@ -168,6 +211,40 @@ mod tests {
         let (decoded, n) = decode_frame(&frame).expect("decode");
         assert_eq!(n, frame.len());
         assert_eq!(decoded, Decoded::Ignored);
+    }
+
+    #[test]
+    fn call_invite_audio_roundtrip() {
+        let frame = encode_call_invite(MediaType::Audio);
+        let json = std::str::from_utf8(&frame[4..]).expect("utf8");
+        assert_eq!(json, r#"{"type":"CallInvite","media":"Audio"}"#);
+        let (decoded, n) = decode_frame(&frame).expect("decode");
+        assert_eq!(n, frame.len());
+        assert_eq!(decoded, Decoded::CallInvite { media: MediaType::Audio });
+    }
+
+    #[test]
+    fn call_accept_reject_end_roundtrip() {
+        let accept = encode_call_accept();
+        assert_eq!(
+            std::str::from_utf8(&accept[4..]).expect("utf8"),
+            r#"{"type":"CallAccept"}"#
+        );
+        assert_eq!(decode_frame(&accept).expect("accept").0, Decoded::CallAccept);
+
+        let reject = encode_call_reject();
+        assert_eq!(
+            std::str::from_utf8(&reject[4..]).expect("utf8"),
+            r#"{"type":"CallReject"}"#
+        );
+        assert_eq!(decode_frame(&reject).expect("reject").0, Decoded::CallReject);
+
+        let end = encode_call_end();
+        assert_eq!(
+            std::str::from_utf8(&end[4..]).expect("utf8"),
+            r#"{"type":"CallEnd"}"#
+        );
+        assert_eq!(decode_frame(&end).expect("end").0, Decoded::CallEnd);
     }
 
     #[test]

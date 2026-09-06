@@ -1,22 +1,27 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use p2p_core::{DialHints, Endpoint, RelayConfig, Session};
 use p2p_trust::{FileKeyStore, FileTrustStore, PeerId, TrustState};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::audio_io::LiveMedia;
 use crate::chatlog::ChatKeys;
 use crate::frame::{
-    decode_frame, encode_file_accept, encode_file_chunk, encode_file_offer, encode_file_reject,
-    encode_text, Decoded,
+    decode_frame, encode_call_accept, encode_call_end, encode_call_invite, encode_call_reject,
+    encode_file_accept, encode_file_chunk, encode_file_offer, encode_file_reject, encode_text,
+    Decoded, MediaType,
 };
 use crate::inbox::{ChatMessage, Direction, Inbox};
 use crate::nicknames::{resolve_dial, NicknameStore};
 use crate::roster::{ChatError, PeerStatus, Roster};
 use crate::{map_trust, to_hex, Error};
+
+/// How long the caller waits for `CallAccept` before giving up.
+const INVITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// n0 public relays, matching iroh 1.1.0 `defaults::prod`.
 ///
@@ -79,6 +84,23 @@ enum IoEvent {
     Disconnected {
         peer_id_hex: String,
     },
+    CallInvite {
+        peer_id_hex: String,
+        media: MediaType,
+    },
+    CallAccept {
+        peer_id_hex: String,
+    },
+    CallReject {
+        peer_id_hex: String,
+    },
+    CallEnd {
+        peer_id_hex: String,
+    },
+    Datagram {
+        peer_id_hex: String,
+        bytes: Vec<u8>,
+    },
 }
 
 /// One row in the sidebar: nickname or Peer ID prefix.
@@ -117,6 +139,84 @@ pub struct PendingOffer {
     pub size: u64,
 }
 
+/// Phase of the single process-wide call, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallPhase {
+    Outgoing,
+    Incoming,
+    Active,
+}
+
+/// Why an outgoing invite did not connect. Shown in the chat view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallResult {
+    Rejected,
+    TimedOut,
+}
+
+/// Snapshot of the process-wide call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallView {
+    pub peer_id_hex: String,
+    pub media: MediaType,
+    pub phase: CallPhase,
+}
+
+/// An inbound call invite awaiting accept/reject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingInvite {
+    pub peer_id_hex: String,
+    pub media: MediaType,
+}
+
+enum CallState {
+    Outgoing {
+        peer_id_hex: String,
+        media: MediaType,
+        deadline: Instant,
+    },
+    Incoming {
+        peer_id_hex: String,
+        media: MediaType,
+    },
+    Active {
+        peer_id_hex: String,
+        media: MediaType,
+    },
+}
+
+impl CallState {
+    fn peer(&self) -> &str {
+        match self {
+            Self::Outgoing { peer_id_hex, .. }
+            | Self::Incoming { peer_id_hex, .. }
+            | Self::Active { peer_id_hex, .. } => peer_id_hex,
+        }
+    }
+
+    fn view(&self) -> CallView {
+        match self {
+            Self::Outgoing {
+                peer_id_hex, media, ..
+            } => CallView {
+                peer_id_hex: peer_id_hex.clone(),
+                media: *media,
+                phase: CallPhase::Outgoing,
+            },
+            Self::Incoming { peer_id_hex, media } => CallView {
+                peer_id_hex: peer_id_hex.clone(),
+                media: *media,
+                phase: CallPhase::Incoming,
+            },
+            Self::Active { peer_id_hex, media } => CallView {
+                peer_id_hex: peer_id_hex.clone(),
+                media: *media,
+                phase: CallPhase::Active,
+            },
+        }
+    }
+}
+
 struct Transfer {
     name: String,
     size: u64,
@@ -147,6 +247,9 @@ pub struct Snapshot {
     pub messages: Vec<ChatMessage>,
     pub transfer: Option<FileProgress>,
     pub pending_offer: Option<PendingOffer>,
+    pub call: Option<CallView>,
+    pub pending_invite: Option<PendingInvite>,
+    pub call_result: Option<CallResult>,
 }
 
 /// Headless node: nicknames + sessions + dial/accept + text.
@@ -161,6 +264,10 @@ pub struct Node {
     pending: HashMap<String, IncomingOffer>,
     trust: HashMap<String, TrustState>,
     download_dir: std::path::PathBuf,
+    call: Option<CallState>,
+    media: Option<LiveMedia>,
+    dgram_tx: HashMap<String, mpsc::UnboundedSender<Vec<u8>>>,
+    call_result: Option<(String, CallResult)>,
     workers: Vec<JoinHandle<()>>,
     commands: mpsc::UnboundedSender<Command>,
     events: mpsc::UnboundedReceiver<Event>,
@@ -217,6 +324,10 @@ impl Node {
             pending: HashMap::new(),
             trust: HashMap::new(),
             download_dir,
+            call: None,
+            media: None,
+            dgram_tx: HashMap::new(),
+            call_result: None,
             workers: Vec::new(),
             commands: cmd_tx,
             events: evt_rx,
@@ -302,7 +413,19 @@ impl Node {
                 IoEvent::Disconnected { peer_id_hex } => {
                     self.handle_disconnect(&peer_id_hex);
                 }
+                IoEvent::CallInvite { peer_id_hex, media } => {
+                    self.handle_call_invite(&peer_id_hex, media);
+                }
+                IoEvent::CallAccept { peer_id_hex } => self.handle_call_accept(&peer_id_hex),
+                IoEvent::CallReject { peer_id_hex } => self.handle_call_reject(&peer_id_hex),
+                IoEvent::CallEnd { peer_id_hex } => self.handle_call_end(&peer_id_hex),
+                IoEvent::Datagram { peer_id_hex, bytes } => {
+                    self.handle_datagram(&peer_id_hex, &bytes);
+                }
             }
+        }
+        if self.expire_invite() {
+            changed = true;
         }
         changed
     }
@@ -310,14 +433,28 @@ impl Node {
     /// Snapshot for painting the sidebar and chat pane.
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
-        snapshot(
+        let mut snap = snapshot(
             &self.nicknames,
             &self.roster,
             &self.inbox,
             &self.transfers,
             &self.pending,
             &self.local_peer_id_hex,
-        )
+        );
+        snap.call = self.call.as_ref().map(CallState::view);
+        snap.pending_invite = match &self.call {
+            Some(CallState::Incoming { peer_id_hex, media }) => Some(PendingInvite {
+                peer_id_hex: peer_id_hex.clone(),
+                media: *media,
+            }),
+            _ => None,
+        };
+        snap.call_result = snap.selected.as_deref().and_then(|peer| {
+            self.call_result
+                .as_ref()
+                .and_then(|(p, r)| (p == peer).then_some(*r))
+        });
+        snap
     }
 
     /// Parse the dial box and start a connect. Invalid input does not go on the wire.
@@ -444,6 +581,60 @@ impl Node {
         }
     }
 
+    /// Invite the connected Peer to an audio call.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::NotConnected`] if there is no live Session
+    /// * [`Error::Busy`] if a call is already in progress
+    pub fn invite_audio(&mut self, peer_id_hex: &str) -> Result<(), Error> {
+        if self.call.is_some() {
+            return Err(Error::Busy);
+        }
+        let _ = self.live.get(peer_id_hex).ok_or(Error::NotConnected)?;
+        self.send_to_live(peer_id_hex, encode_call_invite(MediaType::Audio));
+        self.call_result = None;
+        self.call = Some(CallState::Outgoing {
+            peer_id_hex: peer_id_hex.to_owned(),
+            media: MediaType::Audio,
+            deadline: Instant::now() + INVITE_TIMEOUT,
+        });
+        Ok(())
+    }
+
+    /// Accept a pending inbound invite. Opens the mic only after this.
+    pub fn accept_call(&mut self, peer_id_hex: &str) {
+        let Some(CallState::Incoming { peer_id_hex: p, media }) = &self.call else {
+            return;
+        };
+        if p != peer_id_hex {
+            return;
+        }
+        let media = *media;
+        self.send_to_live(peer_id_hex, encode_call_accept());
+        self.enter_active(peer_id_hex, media);
+    }
+
+    /// Reject a pending inbound invite.
+    pub fn reject_call(&mut self, peer_id_hex: &str) {
+        if matches!(&self.call, Some(CallState::Incoming { peer_id_hex: p, .. }) if p == peer_id_hex)
+        {
+            self.send_to_live(peer_id_hex, encode_call_reject());
+            self.call = None;
+        }
+    }
+
+    /// Hang up the current call (outgoing, incoming, or active).
+    pub fn hangup(&mut self) {
+        let Some(call) = self.call.take() else {
+            return;
+        };
+        let peer = call.peer().to_owned();
+        self.send_to_live(&peer, encode_call_end());
+        self.stop_media();
+        self.call_result = None;
+    }
+
     /// Queue a frame on the Peer's live session, if any.
     fn send_to_live(&self, peer_id_hex: &str, frame: Vec<u8>) {
         if let Some(tx) = self.live.get(peer_id_hex) {
@@ -559,6 +750,106 @@ impl Node {
         // An unanswered offer dies with the session; no resume in v1.
         self.pending.remove(peer_id_hex);
         self.live.remove(peer_id_hex);
+        self.dgram_tx.remove(peer_id_hex);
+        if self.call.as_ref().is_some_and(|c| c.peer() == peer_id_hex) {
+            self.stop_media();
+            self.call = None;
+        }
+    }
+
+    fn handle_call_invite(&mut self, peer_id_hex: &str, media: MediaType) {
+        if media != MediaType::Audio {
+            self.send_to_live(peer_id_hex, encode_call_reject());
+            return;
+        }
+        match self.trust.get(peer_id_hex).copied().unwrap_or(TrustState::Unknown) {
+            TrustState::Unknown => {
+                self.send_to_live(peer_id_hex, encode_call_reject());
+            }
+            TrustState::Verified | TrustState::Tofu => {
+                if self.call.is_some() {
+                    self.send_to_live(peer_id_hex, encode_call_reject());
+                    return;
+                }
+                self.call_result = None;
+                self.call = Some(CallState::Incoming {
+                    peer_id_hex: peer_id_hex.to_owned(),
+                    media,
+                });
+            }
+        }
+    }
+
+    fn handle_call_accept(&mut self, peer_id_hex: &str) {
+        let Some(CallState::Outgoing { peer_id_hex: p, media, .. }) = &self.call else {
+            return;
+        };
+        if p != peer_id_hex {
+            return;
+        }
+        let media = *media;
+        self.enter_active(peer_id_hex, media);
+    }
+
+    fn handle_call_reject(&mut self, peer_id_hex: &str) {
+        if matches!(&self.call, Some(CallState::Outgoing { peer_id_hex: p, .. }) if p == peer_id_hex)
+        {
+            self.call = None;
+            self.call_result = Some((peer_id_hex.to_owned(), CallResult::Rejected));
+        }
+    }
+
+    fn handle_call_end(&mut self, peer_id_hex: &str) {
+        if self.call.as_ref().is_some_and(|c| c.peer() == peer_id_hex) {
+            self.stop_media();
+            self.call = None;
+            self.call_result = None;
+        }
+    }
+
+    fn handle_datagram(&mut self, peer_id_hex: &str, bytes: &[u8]) {
+        if !matches!(&self.call, Some(CallState::Active { peer_id_hex: p, .. }) if p == peer_id_hex)
+        {
+            return;
+        }
+        if let Some(media) = self.media.as_mut() {
+            media.push_datagram(bytes);
+        }
+    }
+
+    fn enter_active(&mut self, peer_id_hex: &str, media: MediaType) {
+        self.stop_media();
+        if let Some(tx) = self.dgram_tx.get(peer_id_hex).cloned() {
+            self.media = LiveMedia::start(tx);
+        }
+        self.call = Some(CallState::Active {
+            peer_id_hex: peer_id_hex.to_owned(),
+            media,
+        });
+        self.call_result = None;
+    }
+
+    fn stop_media(&mut self) {
+        self.media.take();
+    }
+
+    fn expire_invite(&mut self) -> bool {
+        let Some(CallState::Outgoing {
+            peer_id_hex,
+            deadline,
+            ..
+        }) = &self.call
+        else {
+            return false;
+        };
+        if Instant::now() < *deadline {
+            return false;
+        }
+        let peer = peer_id_hex.clone();
+        self.send_to_live(&peer, encode_call_end());
+        self.call = None;
+        self.call_result = Some((peer, CallResult::TimedOut));
+        true
     }
 
     /// Set or replace a local nickname.
@@ -592,12 +883,14 @@ impl Node {
     fn attach_session(&mut self, peer_id_hex: String, session: Session, trust: TrustState) {
         self.ensure_history(&peer_id_hex);
         let (tx, rx) = mpsc::unbounded_channel();
+        let (dgram_tx, dgram_rx) = mpsc::unbounded_channel();
         self.live.insert(peer_id_hex.clone(), tx);
+        self.dgram_tx.insert(peer_id_hex.clone(), dgram_tx);
         self.roster.connected(peer_id_hex.clone());
         self.trust.insert(peer_id_hex.clone(), trust);
         let io_tx = self.io_tx.clone();
         self.workers.push(tokio::spawn(async move {
-            session_loop(peer_id_hex, session, rx, io_tx).await;
+            session_loop(peer_id_hex, session, rx, dgram_rx, io_tx).await;
         }));
     }
 
@@ -636,6 +929,10 @@ impl Node {
             pending: HashMap::new(),
             trust: HashMap::new(),
             download_dir: dir.to_path_buf(),
+            call: None,
+            media: None,
+            dgram_tx: HashMap::new(),
+            call_result: None,
             workers: Vec::new(),
             commands: cmd_tx,
             events: evt_rx,
@@ -660,6 +957,15 @@ impl Node {
         self.ensure_history(&peer_id_hex);
         self.live.insert(peer_id_hex.clone(), outbound);
         self.roster.connected(peer_id_hex);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_invite_deadline_past(&mut self) {
+        if let Some(CallState::Outgoing { deadline, .. }) = &mut self.call {
+            *deadline = Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now);
+        }
     }
 
     #[cfg(test)]
@@ -692,6 +998,12 @@ impl Node {
                         Decoded::FileChunk { offset, data } => {
                             self.handle_file_chunk(peer_id_hex, offset, &data);
                         }
+                        Decoded::CallInvite { media } => {
+                            self.handle_call_invite(peer_id_hex, media);
+                        }
+                        Decoded::CallAccept => self.handle_call_accept(peer_id_hex),
+                        Decoded::CallReject => self.handle_call_reject(peer_id_hex),
+                        Decoded::CallEnd => self.handle_call_end(peer_id_hex),
                         Decoded::Ignored => {}
                     }
                     rest = &rest[n..];
@@ -710,6 +1022,8 @@ impl Drop for Node {
             w.abort();
         }
         self.live.clear();
+        self.dgram_tx.clear();
+        self.stop_media();
     }
 }
 
@@ -771,6 +1085,9 @@ fn snapshot(
         messages,
         transfer,
         pending_offer,
+        call: None,
+        pending_invite: None,
+        call_result: None,
     }
 }
 
@@ -868,6 +1185,7 @@ async fn session_loop(
     peer_id_hex: String,
     mut session: Session,
     mut outbound: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut outbound_dgram: mpsc::UnboundedReceiver<Vec<u8>>,
     events: mpsc::UnboundedSender<IoEvent>,
 ) {
     let mut buf = Vec::new();
@@ -886,6 +1204,14 @@ async fn session_loop(
                     None => break,
                 }
             }
+            dgram = outbound_dgram.recv() => {
+                match dgram {
+                    Some(bytes) => {
+                        let _ = session.send_datagram(&bytes);
+                    }
+                    None => break,
+                }
+            }
             incoming = session.recv(&mut read) => {
                 match incoming {
                     Ok(0) | Err(_) => break,
@@ -895,11 +1221,44 @@ async fn session_loop(
                     }
                 }
             }
+            // ponytail: 5 ms poll; Session can't be mut-borrowed by recv and
+            // recv_datagram in one select. Dedicated dgram task if P2PCore splits Session.
+            () = tokio::time::sleep(Duration::from_millis(5)) => {}
+        }
+        match drain_datagrams(&peer_id_hex, &session, &events).await {
+            Ok(()) => {}
+            Err(()) => break,
         }
     }
     let _ = events.send(IoEvent::Disconnected {
         peer_id_hex: peer_id_hex.clone(),
     });
+}
+
+/// Drain already-buffered datagrams. Session cannot be borrowed by
+/// `recv` and `recv_datagram` in the same `select!`.
+async fn drain_datagrams(
+    peer_id_hex: &str,
+    session: &Session,
+    events: &mpsc::UnboundedSender<IoEvent>,
+) -> Result<(), ()> {
+    loop {
+        tokio::select! {
+            biased;
+            result = session.recv_datagram() => {
+                match result {
+                    Ok(bytes) => {
+                        let _ = events.send(IoEvent::Datagram {
+                            peer_id_hex: peer_id_hex.to_owned(),
+                            bytes,
+                        });
+                    }
+                    Err(_) => return Err(()),
+                }
+            }
+            () = std::future::ready(()) => return Ok(()),
+        }
+    }
 }
 
 /// Sender-side progress: report bytes actually on the wire, not bytes queued.
@@ -942,6 +1301,10 @@ fn io_event(peer_id_hex: &str, decoded: Decoded) -> Option<IoEvent> {
             offset,
             data,
         }),
+        Decoded::CallInvite { media } => Some(IoEvent::CallInvite { peer_id_hex, media }),
+        Decoded::CallAccept => Some(IoEvent::CallAccept { peer_id_hex }),
+        Decoded::CallReject => Some(IoEvent::CallReject { peer_id_hex }),
+        Decoded::CallEnd => Some(IoEvent::CallEnd { peer_id_hex }),
         Decoded::Ignored => None,
     }
 }
@@ -1405,6 +1768,198 @@ mod tests {
         let snap = node.snapshot();
         assert!(snap.pending_offer.is_none());
         assert!(snap.transfer.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn connected_node(dir: &std::path::Path) -> (Node, String, mpsc::UnboundedReceiver<Vec<u8>>) {
+        let mut node = Node::test_node(dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        (node, peer, rx)
+    }
+
+    #[tokio::test]
+    async fn invite_audio_sends_call_invite() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.invite_audio(&peer).expect("invite");
+        let frame = rx.try_recv().expect("bytes");
+        let (decoded, _) = decode_frame(&frame).expect("decode");
+        assert_eq!(decoded, Decoded::CallInvite { media: MediaType::Audio });
+        let snap = node.snapshot();
+        let call = snap.call.expect("outgoing");
+        assert_eq!(call.peer_id_hex, peer);
+        assert_eq!(call.phase, CallPhase::Outgoing);
+        assert_eq!(call.media, MediaType::Audio);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn inbound_audio_invite_shows_pending() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.set_trust(&peer, TrustState::Tofu);
+        node.push_incoming_bytes(&peer, &encode_call_invite(MediaType::Audio));
+        let snap = node.snapshot();
+        let pending = snap.pending_invite.expect("pending");
+        assert_eq!(pending.peer_id_hex, peer);
+        assert_eq!(pending.media, MediaType::Audio);
+        assert_eq!(snap.call.expect("incoming").phase, CallPhase::Incoming);
+        assert!(rx.try_recv().is_err(), "must not auto-accept or occupy mic");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn untrusted_inbound_invite_is_rejected() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.set_trust(&peer, TrustState::Unknown);
+        node.push_incoming_bytes(&peer, &encode_call_invite(MediaType::Audio));
+        let frame = rx.try_recv().expect("reject");
+        assert_eq!(decode_frame(&frame).expect("decode").0, Decoded::CallReject);
+        assert!(node.snapshot().pending_invite.is_none());
+        assert!(node.snapshot().call.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remote_reject_returns_caller_to_chat() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.invite_audio(&peer).expect("invite");
+        let _ = rx.try_recv().expect("invite frame");
+        node.push_incoming_bytes(&peer, &encode_call_reject());
+        let snap = node.snapshot();
+        assert!(snap.call.is_none());
+        assert_eq!(snap.call_result, Some(CallResult::Rejected));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn invite_timeout_returns_timed_out() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.invite_audio(&peer).expect("invite");
+        let _ = rx.try_recv().expect("invite");
+        node.set_invite_deadline_past();
+        node.poll();
+        let frame = rx.try_recv().expect("end");
+        assert_eq!(decode_frame(&frame).expect("decode").0, Decoded::CallEnd);
+        let snap = node.snapshot();
+        assert!(snap.call.is_none());
+        assert_eq!(snap.call_result, Some(CallResult::TimedOut));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn second_invite_fails_when_busy() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.invite_audio(&peer).expect("first");
+        let _ = rx.try_recv();
+        assert_eq!(node.invite_audio(&peer), Err(Error::Busy));
+        let other = valid_peer_hex();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(other.clone(), tx);
+        assert_eq!(node.invite_audio(&other), Err(Error::Busy));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn inbound_invite_while_busy_is_rejected() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.set_trust(&peer, TrustState::Verified);
+        node.invite_audio(&peer).expect("first");
+        let _ = rx.try_recv();
+        let other = valid_peer_hex();
+        let (tx, mut other_rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(other.clone(), tx);
+        node.set_trust(&other, TrustState::Verified);
+        node.push_incoming_bytes(&other, &encode_call_invite(MediaType::Audio));
+        let frame = other_rx.try_recv().expect("reject");
+        assert_eq!(decode_frame(&frame).expect("decode").0, Decoded::CallReject);
+        assert_eq!(
+            node.snapshot().call.expect("still first").peer_id_hex,
+            peer
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn accept_then_hangup_sends_end() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.set_trust(&peer, TrustState::Verified);
+        node.push_incoming_bytes(&peer, &encode_call_invite(MediaType::Audio));
+        node.accept_call(&peer);
+        let frame = rx.try_recv().expect("accept");
+        assert_eq!(decode_frame(&frame).expect("decode").0, Decoded::CallAccept);
+        assert_eq!(node.snapshot().call.expect("active").phase, CallPhase::Active);
+        node.hangup();
+        let frame = rx.try_recv().expect("end");
+        assert_eq!(decode_frame(&frame).expect("decode").0, Decoded::CallEnd);
+        assert!(node.snapshot().call.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remote_end_clears_local_call() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.invite_audio(&peer).expect("invite");
+        let _ = rx.try_recv();
+        node.push_incoming_bytes(&peer, &encode_call_accept());
+        assert_eq!(node.snapshot().call.expect("active").phase, CallPhase::Active);
+        node.push_incoming_bytes(&peer, &encode_call_end());
+        assert!(node.snapshot().call.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn text_still_works_during_call() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.invite_audio(&peer).expect("invite");
+        let _ = rx.try_recv();
+        node.push_incoming_bytes(&peer, &encode_call_accept());
+        node.send_text(&peer, "still typing").expect("text");
+        let frame = rx.try_recv().expect("text frame");
+        match decode_frame(&frame).expect("decode").0 {
+            Decoded::Text { content, .. } => assert_eq!(content, "still typing"),
+            other => panic!("expected text, got {other:?}"),
+        }
+        node.push_incoming_bytes(&peer, &encode_text("got it", 1));
+        let snap = node.snapshot();
+        assert_eq!(snap.messages.last().expect("msg").content, "got it");
+        assert_eq!(snap.call.expect("still active").phase, CallPhase::Active);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn inbound_video_invite_is_rejected() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.set_trust(&peer, TrustState::Verified);
+        node.push_incoming_bytes(&peer, &encode_call_invite(MediaType::AudioVideo));
+        let frame = rx.try_recv().expect("reject");
+        assert_eq!(decode_frame(&frame).expect("decode").0, Decoded::CallReject);
+        assert!(node.snapshot().call.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reject_inbound_sends_reject() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.set_trust(&peer, TrustState::Tofu);
+        node.push_incoming_bytes(&peer, &encode_call_invite(MediaType::Audio));
+        node.reject_call(&peer);
+        let frame = rx.try_recv().expect("reject");
+        assert_eq!(decode_frame(&frame).expect("decode").0, Decoded::CallReject);
+        assert!(node.snapshot().call.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

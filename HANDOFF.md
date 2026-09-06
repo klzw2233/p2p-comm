@@ -2,7 +2,7 @@
 
 ## 项目状态
 
-**当前阶段**: 文字 + 文件已合入 main（PR #15）。已连接 Peer 可互发文字（长度前缀 JSON）和文件（TOFU）；记录按 Peer 加密 JSONL 落盘。尚未做语音/视频。
+**当前阶段**: 文字 + 文件 + 语音已合入。已连接 Peer 可互发文字、文件（TOFU）和语音（Opus 数据报）；记录按 Peer 加密 JSONL 落盘。尚未做视频。
 
 栈评估（2026-09-06）: [notes/2026-09-06-stack-architecture-review.md](./notes/2026-09-06-stack-architecture-review.md)
 
@@ -59,7 +59,7 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 1. ~~等 P2PCore PR #22 合入 main~~ 已切到 `main`
 2. ~~开第一张 spec issue~~ issue #1
 3. ~~搭建 CI~~ `.github/workflows/ci.yml`
-4. 按 issue #1 实现（顺序：~~身份解锁~~ → ~~拨号/侧边栏~~ → ~~存储/文字~~ → ~~文件~~ → 语音 → 视频）
+4. 按 issue #1 实现（顺序：~~身份解锁~~ → ~~拨号/侧边栏~~ → ~~存储/文字~~ → ~~文件~~ → ~~语音~~ → 视频）
 5. 朋友异机验收
 6. macOS：#1 完成后再开独立 spec（ADR-0001）
 

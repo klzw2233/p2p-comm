@@ -1,8 +1,8 @@
 use eframe::egui;
 
 use p2p_comm_core::{
-    default_data_dir, has_stored_identity, short_id, Error, FileProgress, Node, PeerStatus,
-    PendingOffer, Snapshot, TransferStatus,
+    default_data_dir, has_stored_identity, short_id, CallPhase, CallResult, Error, FileProgress,
+    Node, PeerStatus, PendingInvite, PendingOffer, Snapshot, TransferStatus,
 };
 
 fn main() -> eframe::Result {
@@ -95,9 +95,12 @@ impl eframe::App for App {
                         TransferStatus::Offered | TransferStatus::Transferring
                     )
                 });
+                let in_call = snap.call.is_some();
                 if changed
                     || transferring
+                    || in_call
                     || snap.pending_offer.is_some()
+                    || snap.pending_invite.is_some()
                     || snap.selected_status == Some(PeerStatus::Connecting)
                     || snap.selected_status == Some(PeerStatus::Connected)
                 {
@@ -135,6 +138,7 @@ fn error_text(err: Error) -> &'static str {
         Error::InvalidFrame => "Malformed message.",
         Error::NotConnected => "Not connected to this Peer.",
         Error::DecryptFailed => "Could not decrypt chat history.",
+        Error::Busy => "Already in a call.",
     }
 }
 
@@ -183,6 +187,9 @@ fn main_ui(ctx: &egui::Context, main: &mut MainState, snap: &Snapshot) {
     egui::CentralPanel::default().show(ctx, |ui| chat_ui(ui, main, snap));
     if let Some(offer) = &snap.pending_offer {
         offer_window(ctx, main, offer);
+    }
+    if let Some(invite) = &snap.pending_invite {
+        invite_window(ctx, main, invite);
     }
 }
 
@@ -271,6 +278,7 @@ fn chat_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
     ui.label(format!("Peer: {}", main.node.display_name(peer)));
     ui.label(format!("Peer ID: {peer}"));
     ui.label(status_text(snap.selected_status));
+    call_bar(ui, main, snap, peer);
     ui.horizontal(|ui| {
         ui.label("Nickname");
         ui.add(egui::TextEdit::singleline(&mut main.nickname_draft).hint_text("local nickname"));
@@ -389,6 +397,66 @@ fn offer_window(ctx: &egui::Context, main: &mut MainState, offer: &PendingOffer)
                 }
                 if ui.button("Reject").clicked() {
                     main.node.reject_file(&peer);
+                }
+            });
+        });
+}
+
+fn call_bar(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot, peer: &str) {
+    ui.horizontal(|ui| {
+        match snap.call.as_ref() {
+            Some(call) if call.peer_id_hex == peer => {
+                let label = match call.phase {
+                    CallPhase::Outgoing => "Calling…",
+                    CallPhase::Incoming => "Incoming call",
+                    CallPhase::Active => "In call",
+                };
+                ui.colored_label(egui::Color32::from_rgb(90, 160, 90), label);
+                if ui.button("Hang up").clicked() {
+                    main.node.hangup();
+                }
+            }
+            Some(_) => {
+                ui.label("Busy on another call");
+            }
+            None => {
+                let connected = snap.selected_status == Some(PeerStatus::Connected);
+                if ui
+                    .add_enabled(connected, egui::Button::new("Voice"))
+                    .clicked()
+                {
+                    if let Err(err) = main.node.invite_audio(peer) {
+                        main.send_error = Some(error_text(err).to_owned());
+                    }
+                }
+            }
+        }
+    });
+    if let Some(result) = snap.call_result {
+        let text = match result {
+            CallResult::Rejected => "Call declined.",
+            CallResult::TimedOut => "Call timed out.",
+        };
+        ui.colored_label(egui::Color32::from_rgb(200, 80, 80), text);
+    }
+}
+
+fn invite_window(ctx: &egui::Context, main: &mut MainState, invite: &PendingInvite) {
+    let peer = invite.peer_id_hex.clone();
+    egui::Window::new("Incoming call")
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "{} is calling (voice).",
+                main.node.display_name(&peer)
+            ));
+            ui.horizontal(|ui| {
+                if ui.button("Accept").clicked() {
+                    main.node.accept_call(&peer);
+                }
+                if ui.button("Reject").clicked() {
+                    main.node.reject_call(&peer);
                 }
             });
         });

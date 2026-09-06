@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use p2p_trust::{FileKeyStore, IdentityKey, KeyStore, PeerId, TrustError};
 
+mod audio;
+mod audio_io;
 mod chatlog;
 mod frame;
 mod inbox;
@@ -11,12 +13,16 @@ mod roster;
 
 pub use chatlog::ChatKeys;
 pub use frame::{
-    decode_frame, encode_file_accept, encode_file_chunk, encode_file_offer, encode_file_reject,
-    encode_text, Decoded,
+    decode_frame, encode_call_accept, encode_call_end, encode_call_invite, encode_call_reject,
+    encode_file_accept, encode_file_chunk, encode_file_offer, encode_file_reject, encode_text,
+    Decoded, MediaType,
 };
 pub use inbox::{ChatMessage, Direction};
 pub use nicknames::{resolve_dial, short_id, NicknameStore};
-pub use node::{FileProgress, Node, PendingOffer, SidebarItem, Snapshot, TransferStatus};
+pub use node::{
+    CallPhase, CallResult, CallView, FileProgress, Node, PendingInvite, PendingOffer, SidebarItem,
+    Snapshot, TransferStatus,
+};
 pub use roster::{ChatError, PeerStatus};
 
 /// Unlocked local identity. The secret seed is not retained.
@@ -49,6 +55,7 @@ pub enum Error {
     InvalidFrame,
     NotConnected,
     DecryptFailed,
+    Busy,
 }
 
 /// Platform data directory (`~/.local/share/p2p-comm` on Linux, `%APPDATA%\p2p-comm` on Windows).
