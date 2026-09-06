@@ -2,7 +2,7 @@
 
 ## 项目状态
 
-**当前阶段**: 文字 + 文件 + 语音已合入 main（PR #17）。视频在 `feat/video-calls`（issue #8）。已连接 Peer 可互发文字、文件（TOFU）和语音；记录按 Peer 加密 JSONL 落盘。
+**当前阶段**: 文字 + 文件 + 语音 + 视频已合入 main（PR #18 / issue #8）。已连接 Peer 可互发文字、文件（TOFU）、语音和视频；记录按 Peer 加密 JSONL 落盘。v1 功能做完，剩朋友异机验收。
 
 栈评估（2026-09-06）: [notes/2026-09-06-stack-architecture-review.md](./notes/2026-09-06-stack-architecture-review.md)
 
@@ -59,7 +59,7 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 1. ~~等 P2PCore PR #22 合入 main~~ 已切到 `main`
 2. ~~开第一张 spec issue~~ issue #1
 3. ~~搭建 CI~~ `.github/workflows/ci.yml`
-4. 按 issue #1 实现（顺序：~~身份解锁~~ → ~~拨号/侧边栏~~ → ~~存储/文字~~ → ~~文件~~ → ~~语音~~ → ~~视频~~）
+4. ~~按 issue #1 实现（顺序：身份解锁 → 拨号/侧边栏 → 存储/文字 → 文件 → 语音 → 视频）~~
 5. 朋友异机验收
 6. macOS：#1 完成后再开独立 spec（ADR-0001）
 
@@ -67,7 +67,7 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 
 - **同机测试不可靠**: Win10 宿主 + Ubuntu VM 同时跑会抢摄像头/麦克风，验证以朋友异机测试为准
 - **Relay**: v1 用 `RelayConfig::n0_public()`。n0 公共 relay 是 hobby：无 SLA、有限速、能看见连接元数据（IP/时长/流量）。直连失败时视频会卡。生产需自建或付费 relay
-- **视频数据报**: DATAGRAM 不能分片。编码必须把 slice 卡在 `max_datagram_size() - 9` 以内；丢包花屏是 v1 可接受行为
+- **视频数据报**: DATAGRAM 不能分片。编码必须把 slice 卡在 `max_datagram_size() - 9` 以内；丢包花屏是 v1 可接受行为。`max_datagram_size` 在 Session 接入时快照，不在每帧重读
 - **文件 HOL**: 控制流和 FileChunk 共用一条可靠流
 - **H.264**: `openh264` crate 默认编译 Cisco 源码。Cisco 的 MPEG LA 覆盖只针对 **它分发的预编译二进制模块**，不自动覆盖自编译。本仓库是私人、不发布、非商用工具，实际风险低，但不是法律结论
 
