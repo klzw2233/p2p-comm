@@ -39,7 +39,7 @@ pub fn encode_text(content: &str, timestamp: u64) -> Vec<u8> {
     })
 }
 
-/// Encode a FileOffer. `hash` is SHA-256, sent as 64 lowercase hex chars.
+/// Encode a `FileOffer`. `hash` is SHA-256, sent as 64 lowercase hex chars.
 #[must_use]
 pub fn encode_file_offer(name: &str, size: u64, hash: [u8; 32]) -> Vec<u8> {
     encode_json(&WireMessage::FileOffer {
@@ -49,19 +49,19 @@ pub fn encode_file_offer(name: &str, size: u64, hash: [u8; 32]) -> Vec<u8> {
     })
 }
 
-/// Encode a FileAccept (no fields).
+/// Encode a `FileAccept` (no fields).
 #[must_use]
 pub fn encode_file_accept() -> Vec<u8> {
     encode_json(&WireMessage::FileAccept)
 }
 
-/// Encode a FileReject (no fields).
+/// Encode a `FileReject` (no fields).
 #[must_use]
 pub fn encode_file_reject() -> Vec<u8> {
     encode_json(&WireMessage::FileReject)
 }
 
-/// Encode a FileChunk. `data` is standard base64 (padded), never a JSON number array.
+/// Encode a `FileChunk`. `data` is standard base64 (padded), never a JSON number array.
 #[must_use]
 pub fn encode_file_chunk(offset: u64, data: &[u8]) -> Vec<u8> {
     use base64::engine::general_purpose::STANDARD;

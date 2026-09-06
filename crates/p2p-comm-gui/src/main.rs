@@ -360,7 +360,9 @@ fn transfer_ui(ui: &mut egui::Ui, xfer: &FileProgress) {
     let fraction = if xfer.size == 0 {
         1.0
     } else {
-        (xfer.transferred as f32 / xfer.size as f32).clamp(0.0, 1.0)
+        let done = xfer.transferred.min(xfer.size);
+        let percent = u16::try_from(done.saturating_mul(100) / xfer.size).unwrap_or(100);
+        f32::from(percent) / 100.0
     };
     ui.add(
         egui::ProgressBar::new(fraction)
@@ -394,11 +396,13 @@ fn offer_window(ctx: &egui::Context, main: &mut MainState, offer: &PendingOffer)
 
 fn format_size(bytes: u64) -> String {
     const KIB: u64 = 1024;
-    match bytes {
-        0..=1023 => format!("{bytes} B"),
-        _ if bytes < 64 * KIB => format!("{:.1} KiB", bytes as f64 / KIB as f64),
-        _ if bytes < 1024 * 1024 => format!("{:.0} KiB", bytes as f64 / KIB as f64),
-        _ => format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0)),
+    const MIB: u64 = 1024 * 1024;
+    if bytes < KIB {
+        format!("{bytes} B")
+    } else if bytes < MIB {
+        format!("{} KiB", bytes / KIB)
+    } else {
+        format!("{} MiB", bytes / MIB)
     }
 }
 

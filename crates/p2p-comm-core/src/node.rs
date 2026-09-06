@@ -279,7 +279,7 @@ impl Node {
                     peer_id_hex,
                     offset,
                     data,
-                } => self.handle_file_chunk(&peer_id_hex, offset, data),
+                } => self.handle_file_chunk(&peer_id_hex, offset, &data),
                 IoEvent::SendProgress {
                     peer_id_hex,
                     transferred,
@@ -375,7 +375,7 @@ impl Node {
         Ok(())
     }
 
-    /// Offer a local file to a connected Peer. SHA-256 is computed before FileOffer.
+    /// Offer a local file to a connected Peer. SHA-256 is computed before `FileOffer`.
     ///
     /// # Errors
     ///
@@ -499,7 +499,7 @@ impl Node {
                 let peer = peer_id_hex.to_owned();
                 let io_tx = self.io_tx.clone();
                 self.workers.push(tokio::spawn(async move {
-                    send_chunks(peer, bytes, tx, io_tx).await;
+                    send_chunks(&peer, &bytes, tx, &io_tx);
                 }));
             }
         }
@@ -513,7 +513,7 @@ impl Node {
         }
     }
 
-    fn handle_file_chunk(&mut self, peer_id_hex: &str, offset: u64, data: Vec<u8>) {
+    fn handle_file_chunk(&mut self, peer_id_hex: &str, offset: u64, data: &[u8]) {
         let Some(xfer) = self.transfers.get_mut(peer_id_hex) else {
             return;
         };
@@ -523,7 +523,7 @@ impl Node {
         if offset != xfer.transferred {
             return; // Out-of-order or duplicate chunk; no resume in v1.
         }
-        xfer.buffer.extend_from_slice(&data);
+        xfer.buffer.extend_from_slice(data);
         xfer.transferred += data.len() as u64;
         if xfer.transferred >= xfer.size {
             self.finish_incoming_transfer(peer_id_hex);
@@ -690,7 +690,7 @@ impl Node {
                         Decoded::FileAccept => self.handle_file_accept(peer_id_hex),
                         Decoded::FileReject => self.handle_file_reject(peer_id_hex),
                         Decoded::FileChunk { offset, data } => {
-                            self.handle_file_chunk(peer_id_hex, offset, data);
+                            self.handle_file_chunk(peer_id_hex, offset, &data);
                         }
                         Decoded::Ignored => {}
                     }
@@ -861,7 +861,7 @@ async fn accept_loop(endpoint: Arc<Endpoint>, events: mpsc::UnboundedSender<Even
 
 /// Trust of a connected Peer; Unknown on any store error (offer then auto-rejects).
 fn trust_of(endpoint: &Endpoint, peer: &PeerId) -> TrustState {
-    endpoint.trust_state(&peer).unwrap_or(TrustState::Unknown)
+    endpoint.trust_state(peer).unwrap_or(TrustState::Unknown)
 }
 
 async fn session_loop(
@@ -913,16 +913,11 @@ fn report_send_progress(peer_id_hex: &str, bytes: &[u8], events: &mpsc::Unbounde
 }
 
 fn drain_frames(peer_id_hex: &str, buf: &mut Vec<u8>, events: &mpsc::UnboundedSender<IoEvent>) {
-    loop {
-        match decode_frame(buf) {
-            Ok((decoded, n)) => {
-                if let Some(event) = io_event(peer_id_hex, decoded) {
-                    let _ = events.send(event);
-                }
-                buf.drain(..n);
-            }
-            Err(_) => break,
+    while let Ok((decoded, n)) = decode_frame(buf) {
+        if let Some(event) = io_event(peer_id_hex, decoded) {
+            let _ = events.send(event);
         }
+        buf.drain(..n);
     }
 }
 
@@ -951,11 +946,11 @@ fn io_event(peer_id_hex: &str, decoded: Decoded) -> Option<IoEvent> {
     }
 }
 
-async fn send_chunks(
-    peer_id_hex: String,
-    bytes: Vec<u8>,
+fn send_chunks(
+    peer_id_hex: &str,
+    bytes: &[u8],
     tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
-    events: mpsc::UnboundedSender<IoEvent>,
+    events: &mpsc::UnboundedSender<IoEvent>,
 ) {
     let Some(tx) = tx else {
         return;
@@ -966,7 +961,7 @@ async fn send_chunks(
         if tx.send(frame).is_err() {
             // Session died; the Disconnected event fails the transfer.
             let _ = events.send(IoEvent::SendFailed {
-                peer_id_hex: peer_id_hex.clone(),
+                peer_id_hex: peer_id_hex.to_owned(),
             });
             return;
         }
