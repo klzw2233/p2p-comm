@@ -9,6 +9,7 @@ rust-version.workspace = true
 p2p-comm-core = { path = "../p2p-comm-core" }
 eframe = "0.30"
 egui = "0.30"
+rfd = { version = "0.14", default-features = false, features = ["xdg-portal", "gtk3"] }
 tokio = { version = "1.42", features = ["rt-multi-thread"] }
 
 [lints]

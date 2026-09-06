@@ -4,12 +4,15 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use p2p_core::{DialHints, Endpoint, RelayConfig, Session};
-use p2p_trust::{FileKeyStore, FileTrustStore, PeerId};
+use p2p_trust::{FileKeyStore, FileTrustStore, PeerId, TrustState};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::chatlog::ChatKeys;
-use crate::frame::{decode_frame, encode_text, Decoded};
+use crate::frame::{
+    decode_frame, encode_file_accept, encode_file_chunk, encode_file_offer, encode_file_reject,
+    encode_text, Decoded,
+};
 use crate::inbox::{ChatMessage, Direction, Inbox};
 use crate::nicknames::{resolve_dial, NicknameStore};
 use crate::roster::{ChatError, PeerStatus, Roster};
@@ -48,7 +51,33 @@ enum IoEvent {
         content: String,
         timestamp: u64,
     },
+    FileOffer {
+        peer_id_hex: String,
+        name: String,
+        size: u64,
+        hash: [u8; 32],
+    },
+    FileAccept {
+        peer_id_hex: String,
+    },
+    FileReject {
+        peer_id_hex: String,
+    },
+    FileChunk {
+        peer_id_hex: String,
+        offset: u64,
+        data: Vec<u8>,
+    },
+    FileComplete {
+        peer_id_hex: String,
+    },
+    FileFailed {
+        peer_id_hex: String,
+    },
     SendFailed {
+        peer_id_hex: String,
+    },
+    Disconnected {
         peer_id_hex: String,
     },
 }
@@ -61,6 +90,45 @@ pub struct SidebarItem {
     pub unread: u32,
 }
 
+/// Outcome of the in-flight (or just-finished) file transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferStatus {
+    Offered,
+    Transferring,
+    Complete,
+    Rejected,
+    Failed,
+}
+
+/// Progress of the file transfer on the selected Peer, if any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileProgress {
+    pub name: String,
+    pub size: u64,
+    pub transferred: u64,
+    pub direction: Direction,
+    pub status: TransferStatus,
+}
+
+struct Transfer {
+    name: String,
+    size: u64,
+    transferred: u64,
+    direction: Direction,
+    status: TransferStatus,
+    hash: [u8; 32],
+    bytes: Vec<u8>,
+    buffer: Vec<u8>,
+}
+
+struct IncomingOffer {
+    name: String,
+    size: u64,
+    hash: [u8; 32],
+}
+
+const CHUNK: usize = 64 * 1024;
+
 /// Immutable view of the node for the GUI thread.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -70,6 +138,8 @@ pub struct Snapshot {
     pub selected_status: Option<PeerStatus>,
     pub selected_error: Option<ChatError>,
     pub messages: Vec<ChatMessage>,
+    pub transfer: Option<FileProgress>,
+    pub pending_offer: Option<FileProgress>,
 }
 
 /// Headless node: nicknames + sessions + dial/accept + text.
@@ -80,6 +150,10 @@ pub struct Node {
     inbox: Inbox,
     keys: ChatKeys,
     live: HashMap<String, mpsc::UnboundedSender<Vec<u8>>>,
+    transfers: HashMap<String, Transfer>,
+    pending: HashMap<String, IncomingOffer>,
+    trust: HashMap<String, TrustState>,
+    download_dir: std::path::PathBuf,
     workers: Vec<JoinHandle<()>>,
     commands: mpsc::UnboundedSender<Command>,
     events: mpsc::UnboundedReceiver<Event>,
@@ -123,6 +197,8 @@ impl Node {
             dial_loop(dial_ep, cmd_rx, evt_tx).await;
         });
 
+        let download_dir = dirs::download_dir().ok_or(Error::Io)?;
+
         Ok(Self {
             local_peer_id_hex,
             nicknames,
@@ -130,6 +206,10 @@ impl Node {
             inbox: Inbox::new(),
             keys,
             live: HashMap::new(),
+            transfers: HashMap::new(),
+            pending: HashMap::new(),
+            trust: HashMap::new(),
+            download_dir,
             workers: Vec::new(),
             commands: cmd_tx,
             events: evt_rx,
@@ -179,9 +259,31 @@ impl Node {
                         Some(&self.keys),
                     );
                 }
+                IoEvent::FileOffer {
+                    peer_id_hex,
+                    name,
+                    size,
+                    hash,
+                } => self.handle_file_offer(&peer_id_hex, name, size, hash),
+                IoEvent::FileAccept { peer_id_hex } => self.handle_file_accept(&peer_id_hex),
+                IoEvent::FileReject { peer_id_hex } => self.handle_file_reject(&peer_id_hex),
+                IoEvent::FileChunk {
+                    peer_id_hex,
+                    offset,
+                    data,
+                } => self.handle_file_chunk(&peer_id_hex, offset, data),
+                IoEvent::FileComplete { peer_id_hex } => {
+                    self.handle_file_complete(&peer_id_hex);
+                }
+                IoEvent::FileFailed { peer_id_hex } => {
+                    self.handle_file_failed(&peer_id_hex);
+                }
                 IoEvent::SendFailed { peer_id_hex } => {
                     self.inbox.mark_last_failed(&peer_id_hex);
                     self.live.remove(&peer_id_hex);
+                }
+                IoEvent::Disconnected { peer_id_hex } => {
+                    self.handle_disconnect(&peer_id_hex);
                 }
             }
         }
@@ -195,6 +297,8 @@ impl Node {
             &self.nicknames,
             &self.roster,
             &self.inbox,
+            &self.transfers,
+            &self.pending,
             &self.local_peer_id_hex,
         )
     }
@@ -254,6 +358,183 @@ impl Node {
         Ok(())
     }
 
+    /// Offer a local file to a connected Peer. SHA-256 is computed before FileOffer.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::NotConnected`] if there is no live Session
+    /// * [`Error::Io`] if the file cannot be read
+    pub fn send_file(&mut self, peer_id_hex: &str, path: &Path) -> Result<(), Error> {
+        let tx = self.live.get(peer_id_hex).ok_or(Error::NotConnected)?;
+        let bytes = std::fs::read(path).map_err(|_| Error::Io)?;
+        let size = u64::try_from(bytes.len()).map_err(|_| Error::Io)?;
+        let hash = sha256(&bytes);
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or(Error::Io)?
+            .to_owned();
+        let frame = encode_file_offer(&name, size, hash);
+        if tx.send(frame).is_err() {
+            self.live.remove(peer_id_hex);
+            return Err(Error::NotConnected);
+        }
+        self.transfers.insert(
+            peer_id_hex.to_owned(),
+            Transfer {
+                name,
+                size,
+                transferred: 0,
+                direction: Direction::Outgoing,
+                status: TransferStatus::Offered,
+                hash,
+                bytes,
+                buffer: Vec::new(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Accept a pending TOFU file offer.
+    pub fn accept_file(&mut self, peer_id_hex: &str) {
+        if let Some(offer) = self.pending.remove(peer_id_hex) {
+            if let Some(tx) = self.live.get(peer_id_hex) {
+                let _ = tx.send(encode_file_accept());
+            }
+            self.transfers.insert(
+                peer_id_hex.to_owned(),
+                Transfer {
+                    name: offer.name,
+                    size: offer.size,
+                    transferred: 0,
+                    direction: Direction::Incoming,
+                    status: TransferStatus::Transferring,
+                    hash: offer.hash,
+                    bytes: Vec::new(),
+                    buffer: Vec::new(),
+                },
+            );
+        }
+    }
+
+    /// Reject a pending TOFU file offer.
+    pub fn reject_file(&mut self, peer_id_hex: &str) {
+        if self.pending.remove(peer_id_hex).is_some() {
+            if let Some(tx) = self.live.get(peer_id_hex) {
+                let _ = tx.send(encode_file_reject());
+            }
+        }
+    }
+
+    fn handle_file_offer(&mut self, peer_id_hex: &str, name: String, size: u64, hash: [u8; 32]) {
+        match self.trust.get(peer_id_hex).copied().unwrap_or(TrustState::Unknown) {
+            TrustState::Verified => {
+                if let Some(tx) = self.live.get(peer_id_hex) {
+                    let _ = tx.send(encode_file_accept());
+                }
+                self.transfers.insert(
+                    peer_id_hex.to_owned(),
+                    Transfer {
+                        name,
+                        size,
+                        transferred: 0,
+                        direction: Direction::Incoming,
+                        status: TransferStatus::Transferring,
+                        hash,
+                        bytes: Vec::new(),
+                        buffer: Vec::new(),
+                    },
+                );
+            }
+            TrustState::Unknown => {
+                if let Some(tx) = self.live.get(peer_id_hex) {
+                    let _ = tx.send(encode_file_reject());
+                }
+            }
+            TrustState::Tofu => {
+                self.pending.insert(
+                    peer_id_hex.to_owned(),
+                    IncomingOffer { name, size, hash },
+                );
+            }
+        }
+    }
+
+    fn handle_file_accept(&mut self, peer_id_hex: &str) {
+        if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
+            if xfer.direction == Direction::Outgoing && xfer.status == TransferStatus::Offered {
+                xfer.status = TransferStatus::Transferring;
+                let bytes = std::mem::take(&mut xfer.bytes);
+                let tx = self.live.get(peer_id_hex).cloned();
+                let io_tx = self.io_tx.clone();
+                let peer = peer_id_hex.to_owned();
+                self.workers.push(tokio::spawn(async move {
+                    send_chunks(peer, bytes, tx, io_tx).await;
+                }));
+            }
+        }
+    }
+
+    fn handle_file_reject(&mut self, peer_id_hex: &str) {
+        if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
+            if xfer.direction == Direction::Outgoing {
+                xfer.status = TransferStatus::Rejected;
+            }
+        }
+    }
+
+    fn handle_file_chunk(&mut self, peer_id_hex: &str, offset: u64, data: Vec<u8>) {
+        if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
+            if xfer.direction == Direction::Incoming && xfer.status == TransferStatus::Transferring {
+                let expected = xfer.transferred;
+                if offset == expected {
+                    xfer.buffer.extend_from_slice(&data);
+                    xfer.transferred += data.len() as u64;
+                    if xfer.transferred >= xfer.size {
+                        let hash_actual = sha256(&xfer.buffer);
+                        if hash_actual == xfer.hash {
+                            let path = self.download_dir.join(&xfer.name);
+                            if std::fs::write(&path, &xfer.buffer).is_ok() {
+                                let _ = self.io_tx.send(IoEvent::FileComplete {
+                                    peer_id_hex: peer_id_hex.to_owned(),
+                                });
+                            } else {
+                                let _ = self.io_tx.send(IoEvent::FileFailed {
+                                    peer_id_hex: peer_id_hex.to_owned(),
+                                });
+                            }
+                        } else {
+                            let _ = self.io_tx.send(IoEvent::FileFailed {
+                                peer_id_hex: peer_id_hex.to_owned(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_file_complete(&mut self, peer_id_hex: &str) {
+        if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
+            xfer.status = TransferStatus::Complete;
+        }
+    }
+
+    fn handle_file_failed(&mut self, peer_id_hex: &str) {
+        if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
+            xfer.status = TransferStatus::Failed;
+        }
+    }
+
+    fn handle_disconnect(&mut self, peer_id_hex: &str) {
+        if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
+            if xfer.status == TransferStatus::Offered || xfer.status == TransferStatus::Transferring {
+                xfer.status = TransferStatus::Failed;
+            }
+        }
+        self.live.remove(peer_id_hex);
+    }
+
     /// Set or replace a local nickname.
     ///
     /// # Errors
@@ -308,7 +589,6 @@ impl Node {
         }
     }
 
-    /// Test seam: drive send/recv over in-memory byte channels, no `P2PCore` Session.
     #[cfg(test)]
     pub(crate) fn test_node(dir: &Path, password: &str) -> Result<Self, Error> {
         let identity = crate::unlock_key(dir, password)?;
@@ -325,6 +605,10 @@ impl Node {
             inbox: Inbox::new(),
             keys,
             live: HashMap::new(),
+            transfers: HashMap::new(),
+            pending: HashMap::new(),
+            trust: HashMap::new(),
+            download_dir: dir.to_path_buf(),
             workers: Vec::new(),
             commands: cmd_tx,
             events: evt_rx,
@@ -333,6 +617,11 @@ impl Node {
             accept: tokio::spawn(async {}),
             dialer: tokio::spawn(async {}),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_trust(&mut self, peer_id_hex: &str, state: TrustState) {
+        self.trust.insert(peer_id_hex.to_owned(), state);
     }
 
     #[cfg(test)]
@@ -367,6 +656,22 @@ impl Node {
                     );
                     rest = &rest[n..];
                 }
+                Ok((Decoded::FileOffer { name, size, hash }, n)) => {
+                    self.handle_file_offer(peer_id_hex, name, size, hash);
+                    rest = &rest[n..];
+                }
+                Ok((Decoded::FileAccept, n)) => {
+                    self.handle_file_accept(peer_id_hex);
+                    rest = &rest[n..];
+                }
+                Ok((Decoded::FileReject, n)) => {
+                    self.handle_file_reject(peer_id_hex);
+                    rest = &rest[n..];
+                }
+                Ok((Decoded::FileChunk { offset, data }, n)) => {
+                    self.handle_file_chunk(peer_id_hex, offset, data);
+                    rest = &rest[n..];
+                }
                 Ok((Decoded::Ignored, n)) => rest = &rest[n..],
                 Err(_) => break,
             }
@@ -389,6 +694,8 @@ fn snapshot(
     nicknames: &NicknameStore,
     roster: &Roster,
     inbox: &Inbox,
+    transfers: &HashMap<String, Transfer>,
+    pending: &HashMap<String, IncomingOffer>,
     local: &str,
 ) -> Snapshot {
     let mut seen = BTreeSet::new();
@@ -418,6 +725,24 @@ fn snapshot(
         .as_deref()
         .map(|peer| inbox.messages(peer).to_vec())
         .unwrap_or_default();
+    let transfer = selected.as_deref().and_then(|peer| {
+        transfers.get(peer).map(|t| FileProgress {
+            name: t.name.clone(),
+            size: t.size,
+            transferred: t.transferred,
+            direction: t.direction,
+            status: t.status,
+        })
+    });
+    let pending_offer = selected.as_deref().and_then(|peer| {
+        pending.get(peer).map(|p| FileProgress {
+            name: p.name.clone(),
+            size: p.size,
+            transferred: 0,
+            direction: Direction::Incoming,
+            status: TransferStatus::Offered,
+        })
+    });
     Snapshot {
         local_peer_id_hex: local.to_owned(),
         sidebar,
@@ -425,7 +750,14 @@ fn snapshot(
         selected_status,
         selected_error,
         messages,
+        transfer,
+        pending_offer,
     }
+}
+
+fn sha256(bytes: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).into()
 }
 
 fn unix_millis() -> u64 {
@@ -519,7 +851,10 @@ async fn session_loop(
             }
             incoming = session.recv(&mut read) => {
                 match incoming {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => {
+                        let _ = events.send(IoEvent::Disconnected { peer_id_hex: peer_id_hex.clone() });
+                        break;
+                    }
                     Ok(n) => {
                         buf.extend_from_slice(&read[..n]);
                         drain_frames(&peer_id_hex, &mut buf, &events);
@@ -528,6 +863,9 @@ async fn session_loop(
             }
         }
     }
+    let _ = events.send(IoEvent::Disconnected {
+        peer_id_hex: peer_id_hex.clone(),
+    });
 }
 
 fn drain_frames(peer_id_hex: &str, buf: &mut Vec<u8>, events: &mpsc::UnboundedSender<IoEvent>) {
@@ -541,12 +879,69 @@ fn drain_frames(peer_id_hex: &str, buf: &mut Vec<u8>, events: &mpsc::UnboundedSe
                 });
                 buf.drain(..n);
             }
+            Ok((Decoded::FileOffer { name, size, hash }, n)) => {
+                let _ = events.send(IoEvent::FileOffer {
+                    peer_id_hex: peer_id_hex.to_owned(),
+                    name,
+                    size,
+                    hash,
+                });
+                buf.drain(..n);
+            }
+            Ok((Decoded::FileAccept, n)) => {
+                let _ = events.send(IoEvent::FileAccept {
+                    peer_id_hex: peer_id_hex.to_owned(),
+                });
+                buf.drain(..n);
+            }
+            Ok((Decoded::FileReject, n)) => {
+                let _ = events.send(IoEvent::FileReject {
+                    peer_id_hex: peer_id_hex.to_owned(),
+                });
+                buf.drain(..n);
+            }
+            Ok((Decoded::FileChunk { offset, data }, n)) => {
+                let _ = events.send(IoEvent::FileChunk {
+                    peer_id_hex: peer_id_hex.to_owned(),
+                    offset,
+                    data,
+                });
+                buf.drain(..n);
+            }
             Ok((Decoded::Ignored, n)) => {
                 buf.drain(..n);
             }
             Err(_) => break,
         }
     }
+}
+
+async fn send_chunks(
+    peer_id_hex: String,
+    bytes: Vec<u8>,
+    tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    events: mpsc::UnboundedSender<IoEvent>,
+) {
+    let Some(tx) = tx else {
+        let _ = events.send(IoEvent::FileFailed {
+            peer_id_hex: peer_id_hex.clone(),
+        });
+        return;
+    };
+    let mut offset = 0u64;
+    for chunk in bytes.chunks(CHUNK) {
+        let frame = encode_file_chunk(offset, chunk);
+        if tx.send(frame).is_err() {
+            let _ = events.send(IoEvent::FileFailed {
+                peer_id_hex: peer_id_hex.clone(),
+            });
+            return;
+        }
+        offset += chunk.len() as u64;
+    }
+    let _ = events.send(IoEvent::FileComplete {
+        peer_id_hex: peer_id_hex.clone(),
+    });
 }
 
 #[cfg(test)]
@@ -565,7 +960,7 @@ mod tests {
         let mut roster = Roster::new();
         roster.connected(bob.clone());
         let inbox = Inbox::new();
-        let snap = snapshot(&nicks, &roster, &inbox, "me");
+        let snap = snapshot(&nicks, &roster, &inbox, &HashMap::new(), &HashMap::new(), "me");
         let labels: Vec<_> = snap.sidebar.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"Alice"));
         assert!(labels.iter().any(|l| *l == short_id(&bob)));
@@ -581,7 +976,7 @@ mod tests {
         let mut roster = Roster::new();
         roster.connected(peer.clone());
         let inbox = Inbox::new();
-        let snap = snapshot(&nicks, &roster, &inbox, "me");
+        let snap = snapshot(&nicks, &roster, &inbox, &HashMap::new(), &HashMap::new(), "me");
         assert_eq!(snap.sidebar.len(), 1);
         assert_eq!(snap.sidebar[0].label, short_id(&peer));
         let _ = std::fs::remove_dir_all(&dir);
@@ -600,7 +995,7 @@ mod tests {
         let (decoded, _) = decode_frame(&frame).expect("decode");
         match decoded {
             Decoded::Text { content, .. } => assert_eq!(content, "hello"),
-            Decoded::Ignored => panic!("expected text"),
+            _ => panic!("expected text"),
         }
         let inbound = encode_text("yo", 99);
         node.push_incoming_bytes(&peer, &inbound);
@@ -668,6 +1063,275 @@ mod tests {
         let snap = node.snapshot();
         assert_eq!(snap.messages.len(), 1);
         assert_eq!(snap.messages[0].content, "keep-me");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_file_emits_offer_and_shows_progress() {
+        let dir = temp_path();
+        let src = dir.join("notes.txt");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(&src, b"hello world!").expect("write");
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.send_file(&peer, &src).expect("offer");
+        let frame = rx.try_recv().expect("bytes");
+        let (decoded, _) = decode_frame(&frame).expect("decode");
+        match decoded {
+            Decoded::FileOffer { name, size, hash } => {
+                assert_eq!(name, "notes.txt");
+                assert_eq!(size, 12);
+                assert_eq!(
+                    crate::to_hex(&hash),
+                    "7509e5bda0c762d2bac7f90d758b5b2263fa01ccbc542ab5e3df163be08e6ca9"
+                );
+            }
+            other => panic!("expected FileOffer, got {other:?}"),
+        }
+        let snap = node.snapshot();
+        let xfer = snap.transfer.expect("progress");
+        assert_eq!(xfer.name, "notes.txt");
+        assert_eq!(xfer.size, 12);
+        assert_eq!(xfer.transferred, 0);
+        assert_eq!(xfer.direction, Direction::Outgoing);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn verified_peer_auto_accepts_file_offer() {
+        let dir = temp_path();
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.set_trust(&peer, p2p_trust::TrustState::Verified);
+        let hash = [0xab; 32];
+        node.push_incoming_bytes(&peer, &encode_file_offer("notes.txt", 12, hash));
+        let frame = rx.try_recv().expect("accept");
+        let (decoded, _) = decode_frame(&frame).expect("decode");
+        assert_eq!(decoded, Decoded::FileAccept);
+        let xfer = node.snapshot().transfer.expect("progress");
+        assert_eq!(xfer.name, "notes.txt");
+        assert_eq!(xfer.size, 12);
+        assert_eq!(xfer.transferred, 0);
+        assert_eq!(xfer.direction, Direction::Incoming);
+        assert_eq!(xfer.status, TransferStatus::Transferring);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn unknown_peer_rejects_file_offer() {
+        let dir = temp_path();
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.set_trust(&peer, p2p_trust::TrustState::Unknown);
+        let hash = [0xab; 32];
+        node.push_incoming_bytes(&peer, &encode_file_offer("notes.txt", 12, hash));
+        let frame = rx.try_recv().expect("reject");
+        let (decoded, _) = decode_frame(&frame).expect("decode");
+        assert_eq!(decoded, Decoded::FileReject);
+        assert!(node.snapshot().transfer.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn file_accept_triggers_chunk_sending() {
+        let dir = temp_path();
+        let src = dir.join("test.bin");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let content = vec![0xaa; 128 * 1024]; // 128 KiB → 2 chunks
+        std::fs::write(&src, &content).expect("write");
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.send_file(&peer, &src).expect("offer");
+        let _ = rx.try_recv().expect("offer frame");
+        node.push_incoming_bytes(&peer, &encode_file_accept());
+        node.poll();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        node.poll();
+        let mut chunks = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let Ok((Decoded::FileChunk { offset, data }, _)) = decode_frame(&frame) {
+                chunks.push((offset, data));
+            }
+        }
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].0, 0);
+        assert_eq!(chunks[0].1.len(), 64 * 1024);
+        assert_eq!(chunks[1].0, 64 * 1024);
+        assert_eq!(chunks[1].1.len(), 64 * 1024);
+        let snap = node.snapshot();
+        assert!(snap.transfer.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn file_reject_marks_status() {
+        let dir = temp_path();
+        let src = dir.join("test.txt");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(&src, b"data").expect("write");
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.send_file(&peer, &src).expect("offer");
+        let _ = rx.try_recv().expect("offer");
+        node.push_incoming_bytes(&peer, &encode_file_reject());
+        node.poll();
+        let xfer = node.snapshot().transfer.expect("xfer");
+        assert_eq!(xfer.status, TransferStatus::Rejected);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn receive_chunks_and_verify_hash() {
+        let dir = temp_path();
+        std::fs::create_dir_all(&dir).expect("dir");
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.set_trust(&peer, p2p_trust::TrustState::Verified);
+        let data = b"hello world!";
+        let hash = sha256(data);
+        node.push_incoming_bytes(&peer, &encode_file_offer("recv.txt", data.len() as u64, hash));
+        node.poll();
+        node.push_incoming_bytes(&peer, &encode_file_chunk(0, data));
+        node.poll();
+        let xfer = node.snapshot().transfer.expect("xfer");
+        assert_eq!(xfer.status, TransferStatus::Complete);
+        let downloaded = dir.join("recv.txt");
+        assert!(downloaded.exists());
+        assert_eq!(std::fs::read(&downloaded).expect("read"), data);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn receive_chunks_bad_hash_fails() {
+        let dir = temp_path();
+        std::fs::create_dir_all(&dir).expect("dir");
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.set_trust(&peer, p2p_trust::TrustState::Verified);
+        let data = b"corrupted";
+        let wrong_hash = [0xff; 32];
+        node.push_incoming_bytes(&peer, &encode_file_offer("bad.txt", data.len() as u64, wrong_hash));
+        node.poll();
+        node.push_incoming_bytes(&peer, &encode_file_chunk(0, data));
+        node.poll();
+        let xfer = node.snapshot().transfer.expect("xfer");
+        assert_eq!(xfer.status, TransferStatus::Failed);
+        let downloaded = dir.join("bad.txt");
+        assert!(!downloaded.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn disconnect_during_transfer_fails() {
+        let dir = temp_path();
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.set_trust(&peer, p2p_trust::TrustState::Verified);
+        let hash = [0xab; 32];
+        node.push_incoming_bytes(&peer, &encode_file_offer("test.txt", 1000, hash));
+        node.poll();
+        let _ = node.io_tx.send(IoEvent::Disconnected {
+            peer_id_hex: peer.clone(),
+        });
+        node.poll();
+        let xfer = node.snapshot().transfer.expect("xfer");
+        assert_eq!(xfer.status, TransferStatus::Failed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tofu_peer_shows_pending_offer() {
+        let dir = temp_path();
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.set_trust(&peer, p2p_trust::TrustState::Tofu);
+        let hash = [0xab; 32];
+        node.push_incoming_bytes(&peer, &encode_file_offer("test.txt", 100, hash));
+        node.poll();
+        let snap = node.snapshot();
+        assert!(snap.transfer.is_none());
+        let pending = snap.pending_offer.expect("pending");
+        assert_eq!(pending.name, "test.txt");
+        assert_eq!(pending.size, 100);
+        assert_eq!(pending.status, TransferStatus::Offered);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn accept_tofu_offer_starts_transfer() {
+        let dir = temp_path();
+        std::fs::create_dir_all(&dir).expect("dir");
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.set_trust(&peer, p2p_trust::TrustState::Tofu);
+        let data = b"content";
+        let hash = sha256(data);
+        node.push_incoming_bytes(&peer, &encode_file_offer("file.txt", data.len() as u64, hash));
+        node.poll();
+        assert!(node.snapshot().pending_offer.is_some());
+        node.accept_file(&peer);
+        let frame = rx.try_recv().expect("accept frame");
+        let (decoded, _) = decode_frame(&frame).expect("decode");
+        assert_eq!(decoded, Decoded::FileAccept);
+        node.push_incoming_bytes(&peer, &encode_file_chunk(0, data));
+        node.poll();
+        let snap = node.snapshot();
+        assert!(snap.pending_offer.is_none());
+        let xfer = snap.transfer.expect("xfer");
+        assert_eq!(xfer.status, TransferStatus::Complete);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reject_tofu_offer_sends_reject() {
+        let dir = temp_path();
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.set_trust(&peer, p2p_trust::TrustState::Tofu);
+        let hash = [0xab; 32];
+        node.push_incoming_bytes(&peer, &encode_file_offer("file.txt", 100, hash));
+        node.poll();
+        assert!(node.snapshot().pending_offer.is_some());
+        node.reject_file(&peer);
+        let frame = rx.try_recv().expect("reject frame");
+        let (decoded, _) = decode_frame(&frame).expect("decode");
+        assert_eq!(decoded, Decoded::FileReject);
+        let snap = node.snapshot();
+        assert!(snap.pending_offer.is_none());
+        assert!(snap.transfer.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
