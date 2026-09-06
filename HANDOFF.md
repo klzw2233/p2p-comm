@@ -2,7 +2,7 @@
 
 ## 项目状态
 
-**当前阶段**: 文字 + 文件 + 语音已合入。已连接 Peer 可互发文字、文件（TOFU）和语音（Opus 数据报）；记录按 Peer 加密 JSONL 落盘。尚未做视频。
+**当前阶段**: 文字 + 文件 + 语音已合入 main（PR #17）。已连接 Peer 可互发文字、文件（TOFU）和语音（Opus 数据报）；记录按 Peer 加密 JSONL 落盘。尚未做视频。
 
 栈评估（2026-09-06）: [notes/2026-09-06-stack-architecture-review.md](./notes/2026-09-06-stack-architecture-review.md)
 
