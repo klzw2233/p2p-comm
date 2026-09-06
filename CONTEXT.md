@@ -70,6 +70,7 @@
 ## 验证策略
 
 - CI: GitHub Actions `ubuntu-latest` + `windows-latest` 矩阵，依赖 `P2PCORE_TOKEN` 拉取私有依赖
+- 发布: 推送 `v*` tag 触发 Linux + Windows GUI `--release`，产物挂 GitHub Release
 - CI 保证: `cargo build` / `cargo test`（不含真实设备的部分）编译通过
 - 测试只挂 `p2p-comm-core`（假 Session 或进程内双端）
 - 真实设备测试: 朋友异机验证（同机 Win10 宿主 + Ubuntu VM 抢设备不可靠）

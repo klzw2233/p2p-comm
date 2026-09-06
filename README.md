@@ -44,6 +44,15 @@ cargo run --release -p p2p-comm-gui
 
 Actions → **Win10 GUI** → Run workflow。编完下载 artifact `p2p-comm-gui-windows`（`p2p-comm-gui.exe`）。
 
+### 发布
+
+推送 `v*` tag 会编 Linux / Windows release 并创建 GitHub Release：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 首次启动会提示输入身份密码，用于加密本地存储的身份密钥。
 
 ## 使用说明
