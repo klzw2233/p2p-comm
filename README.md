@@ -24,7 +24,6 @@
 ### 前置要求
 
 - Rust 1.80+
-- 配置 `P2PCORE_TOKEN` 环境变量（GitHub Personal Access Token，用于拉取私有 P2PCore 依赖）
 
 ### 编译
 

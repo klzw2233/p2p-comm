@@ -13,7 +13,7 @@
 git clone https://github.com/klzw2233/p2p-comm.git
 cd p2p-comm
 
-# 编译（需要配置 P2PCORE_TOKEN 环境变量以拉取私有 P2PCore 依赖）
+# 编译
 cargo build
 
 # 运行（启动后输入身份密码进入主界面）
