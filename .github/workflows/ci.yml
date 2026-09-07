@@ -48,15 +48,9 @@ jobs:
 
     - name: Build
       run: cargo build --all-targets
-      env:
-        P2PCORE_TOKEN: ${{ secrets.P2PCORE_TOKEN }}
 
     - name: Test
       run: cargo test --all-targets
-      env:
-        P2PCORE_TOKEN: ${{ secrets.P2PCORE_TOKEN }}
 
     - name: Clippy
       run: cargo clippy --all-targets -- -D warnings
-      env:
-        P2PCORE_TOKEN: ${{ secrets.P2PCORE_TOKEN }}

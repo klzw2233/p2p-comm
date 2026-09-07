@@ -36,8 +36,6 @@ jobs:
 
     - name: Build GUI (release)
       run: cargo build --release -p p2p-comm-gui
-      env:
-        P2PCORE_TOKEN: ${{ secrets.P2PCORE_TOKEN }}
 
     - name: Upload exe
       uses: actions/upload-artifact@v4
