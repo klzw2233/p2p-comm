@@ -272,6 +272,8 @@ pub struct Node {
     call_result: Option<(String, CallResult)>,
     workers: Vec<JoinHandle<()>>,
     commands: mpsc::UnboundedSender<Command>,
+    #[cfg(test)]
+    commands_rx: Option<mpsc::UnboundedReceiver<Command>>,
     events: mpsc::UnboundedReceiver<Event>,
     io_events: mpsc::UnboundedReceiver<IoEvent>,
     io_tx: mpsc::UnboundedSender<IoEvent>,
@@ -333,6 +335,8 @@ impl Node {
             call_result: None,
             workers: Vec::new(),
             commands: cmd_tx,
+            #[cfg(test)]
+            commands_rx: None,
             events: evt_rx,
             io_events: io_rx,
             io_tx,
@@ -769,6 +773,8 @@ impl Node {
     }
 
     fn handle_disconnect(&mut self, peer_id_hex: &str) {
+        self.roster
+            .disconnected(peer_id_hex.to_owned(), "Connection lost.".into());
         if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
             if xfer.status == TransferStatus::Offered || xfer.status == TransferStatus::Transferring
             {
@@ -965,7 +971,7 @@ impl Node {
         let local_peer_id_hex = to_hex(identity.peer_id().as_bytes());
         let nicknames = NicknameStore::load(dir)?;
         let keys = ChatKeys::unlock(dir, password)?;
-        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (_evt_tx, evt_rx) = mpsc::unbounded_channel();
         let (io_tx, io_rx) = mpsc::unbounded_channel();
         Ok(Self {
@@ -986,12 +992,22 @@ impl Node {
             call_result: None,
             workers: Vec::new(),
             commands: cmd_tx,
+            commands_rx: Some(cmd_rx),
             events: evt_rx,
             io_events: io_rx,
             io_tx,
             accept: tokio::spawn(async {}),
             dialer: tokio::spawn(async {}),
         })
+    }
+
+    /// Peer ID hex of the next queued dial command, if any. Test seam.
+    #[cfg(test)]
+    pub(crate) fn next_dial_command(&mut self) -> Option<String> {
+        match self.commands_rx.as_mut()?.try_recv() {
+            Ok(Command::Dial(_, hex)) => Some(hex),
+            Err(_) => None,
+        }
     }
 
     #[cfg(test)]
@@ -2183,6 +2199,102 @@ mod tests {
         node.reject_call(&peer);
         let frame = rx.try_recv().expect("reject");
         assert_eq!(decode_frame(&frame).expect("decode").0, Decoded::CallReject);
+        assert!(node.snapshot().call.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn disconnect_marks_peer_failed_and_keeps_history() {
+        let dir = temp_path();
+        let (mut node, peer, _rx) = connected_node(&dir);
+        node.send_text(&peer, "history").expect("send");
+        let _ = node.io_tx.send(IoEvent::Disconnected {
+            peer_id_hex: peer.clone(),
+        });
+        node.poll();
+        let snap = node.snapshot();
+        assert_eq!(snap.selected_status, Some(PeerStatus::Failed));
+        let err = snap.selected_error.expect("error");
+        assert_eq!(err.message, "Connection lost.");
+        assert!(snap.sidebar.iter().any(|i| i.peer_id_hex == peer));
+        assert!(snap.messages.iter().any(|m| m.content == "history"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn redial_after_disconnect_sends_new_connection() {
+        let dir = temp_path();
+        let (mut node, peer, _rx) = connected_node(&dir);
+        let _ = node.io_tx.send(IoEvent::Disconnected {
+            peer_id_hex: peer.clone(),
+        });
+        node.poll();
+        node.dial(&peer).expect("redial");
+        assert_eq!(node.next_dial_command(), Some(peer.clone()));
+        assert_eq!(node.snapshot().selected_status, Some(PeerStatus::Connecting));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn redial_by_nickname_after_disconnect() {
+        let dir = temp_path();
+        let (mut node, peer, _rx) = connected_node(&dir);
+        node.set_nickname(&peer, "alice").expect("nickname");
+        let _ = node.io_tx.send(IoEvent::Disconnected {
+            peer_id_hex: peer.clone(),
+        });
+        node.poll();
+        node.dial("alice").expect("redial");
+        assert_eq!(node.next_dial_command(), Some(peer));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn dial_connected_or_connecting_peer_sends_no_second_command() {
+        let dir = temp_path();
+        let (mut node, peer, _rx) = connected_node(&dir);
+        node.dial(&peer).expect("connected: switch view only");
+        assert!(node.next_dial_command().is_none());
+        let other = valid_peer_hex();
+        node.dial(&other).expect("fresh dial");
+        assert_eq!(node.next_dial_command(), Some(other.clone()));
+        node.dial(&other).expect("connecting: switch view only");
+        assert!(node.next_dial_command().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn disconnect_clears_pending_tofu_offer() {
+        let dir = temp_path();
+        let (mut node, peer, _rx) = connected_node(&dir);
+        node.set_trust(&peer, TrustState::Tofu);
+        let hash = [0xab; 32];
+        node.push_incoming_bytes(&peer, &encode_file_offer("test.txt", 100, hash));
+        node.poll();
+        assert!(node.snapshot().pending_offer.is_some());
+        let _ = node.io_tx.send(IoEvent::Disconnected {
+            peer_id_hex: peer.clone(),
+        });
+        node.poll();
+        assert!(node.snapshot().pending_offer.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn disconnect_stops_active_call() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.invite_audio(&peer).expect("invite");
+        let _ = rx.try_recv();
+        node.push_incoming_bytes(&peer, &encode_call_accept());
+        assert_eq!(
+            node.snapshot().call.expect("active").phase,
+            CallPhase::Active
+        );
+        let _ = node.io_tx.send(IoEvent::Disconnected {
+            peer_id_hex: peer.clone(),
+        });
+        node.poll();
         assert!(node.snapshot().call.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
