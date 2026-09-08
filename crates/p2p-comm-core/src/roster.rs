@@ -62,6 +62,19 @@ impl Roster {
         }
     }
 
+    /// Record that a connected Peer's Session is gone. Does not steal the
+    /// selected chat view.
+    ///
+    /// No-op unless the Peer is currently Connected, so a duplicate or stale
+    /// disconnect cannot clobber a Peer that is mid-dial or already failed.
+    pub fn disconnected(&mut self, peer_id_hex: String, message: String) {
+        if self.peers.get(&peer_id_hex) != Some(&PeerStatus::Connected) {
+            return;
+        }
+        self.peers.insert(peer_id_hex.clone(), PeerStatus::Failed);
+        self.errors.insert(peer_id_hex, ChatError { message });
+    }
+
     /// Switch the chat view. Does not drop any Session.
     ///
     /// The Peer does not need a live Session (nickname-only contacts).
@@ -162,5 +175,42 @@ mod tests {
         roster.connect_failed("aaaa".into(), "already connected".into());
         assert_eq!(roster.status("aaaa"), Some(PeerStatus::Connected));
         assert!(roster.error("aaaa").is_none());
+    }
+
+    #[test]
+    fn disconnect_demotes_connected_peer_with_error() {
+        let mut roster = Roster::new();
+        roster.begin_connect("aaaa".into());
+        roster.connected("aaaa".into());
+        roster.begin_connect("bbbb".into());
+        roster.connected("bbbb".into());
+        roster.select("bbbb");
+        roster.disconnected("aaaa".into(), "Connection lost.".into());
+        assert_eq!(roster.status("aaaa"), Some(PeerStatus::Failed));
+        assert_eq!(
+            roster.error("aaaa").map(|e| e.message.as_str()),
+            Some("Connection lost.")
+        );
+        assert_eq!(roster.selected(), Some("bbbb"));
+        assert!(roster.peer_ids().any(|p| p == "aaaa"));
+    }
+
+    #[test]
+    fn disconnect_ignored_unless_connected() {
+        let mut roster = Roster::new();
+        roster.begin_connect("aaaa".into());
+        roster.disconnected("aaaa".into(), "Connection lost.".into());
+        assert_eq!(roster.status("aaaa"), Some(PeerStatus::Connecting));
+        assert!(roster.error("aaaa").is_none());
+        roster.connect_failed("aaaa".into(), "peer offline".into());
+        roster.disconnected("aaaa".into(), "Connection lost.".into());
+        assert_eq!(roster.status("aaaa"), Some(PeerStatus::Failed));
+        assert_eq!(
+            roster.error("aaaa").map(|e| e.message.as_str()),
+            Some("peer offline")
+        );
+        let mut fresh = Roster::new();
+        fresh.disconnected("cccc".into(), "Connection lost.".into());
+        assert_eq!(fresh.status("cccc"), None);
     }
 }
