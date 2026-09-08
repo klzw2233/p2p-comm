@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -736,7 +736,8 @@ impl Node {
             let Some(xfer) = self.transfers.get_mut(peer_id_hex) else {
                 return;
             };
-            if xfer.direction != Direction::Outgoing || xfer.status != TransferStatus::Transferring {
+            if xfer.direction != Direction::Outgoing || xfer.status != TransferStatus::Transferring
+            {
                 return;
             }
             xfer.transferred = transferred;
@@ -790,7 +791,7 @@ impl Node {
         }
         let ok = sha256(&xfer.buffer) == xfer.hash
             && std::fs::write(
-                self.download_dir.join(safe_filename(&xfer.name)),
+                unique_download_path(&self.download_dir, safe_filename(&xfer.name)),
                 &xfer.buffer,
             )
             .is_ok();
@@ -1215,6 +1216,33 @@ fn safe_filename(name: &str) -> &str {
         .next()
         .filter(|s| !s.is_empty() && *s != "." && *s != "..")
         .unwrap_or("download")
+}
+
+/// If `name` already exists in `dir`, use `stem (1).ext`, `stem (2).ext`, …
+fn unique_download_path(dir: &Path, name: &str) -> PathBuf {
+    let candidate = dir.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("download");
+    let ext = path.extension().and_then(|s| s.to_str());
+    // ponytail: sequential exists() scan; fine for Downloads, not a hot path
+    for n in 1u32.. {
+        let numbered = match ext {
+            Some(ext) => format!("{stem} ({n}).{ext}"),
+            None => format!("{stem} ({n})"),
+        };
+        let candidate = dir.join(&numbered);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!()
 }
 
 fn unix_millis() -> u64 {
@@ -1864,6 +1892,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn receive_same_name_writes_numbered_copy_without_overwriting() {
+        let dir = temp_path();
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("notes.txt"), b"original").expect("seed");
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.set_trust(&peer, p2p_trust::TrustState::Verified);
+        let data = b"new content";
+        let hash = sha256(data);
+        node.push_incoming_bytes(
+            &peer,
+            &encode_file_offer("notes.txt", data.len() as u64, hash),
+        );
+        node.poll();
+        node.push_incoming_bytes(&peer, &encode_file_chunk(0, data));
+        node.poll();
+        let xfer = node.snapshot().transfer.expect("xfer");
+        assert_eq!(xfer.status, TransferStatus::Complete);
+        assert_eq!(
+            std::fs::read(dir.join("notes.txt")).expect("orig"),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("notes (1).txt")).expect("copy"),
+            data
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn receive_same_name_skips_existing_numbered_copy() {
+        let dir = temp_path();
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("notes.txt"), b"original").expect("seed");
+        std::fs::write(dir.join("notes (1).txt"), b"taken").expect("seed-1");
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.set_trust(&peer, p2p_trust::TrustState::Verified);
+        let data = b"new content";
+        let hash = sha256(data);
+        node.push_incoming_bytes(
+            &peer,
+            &encode_file_offer("notes.txt", data.len() as u64, hash),
+        );
+        node.poll();
+        node.push_incoming_bytes(&peer, &encode_file_chunk(0, data));
+        node.poll();
+        let xfer = node.snapshot().transfer.expect("xfer");
+        assert_eq!(xfer.status, TransferStatus::Complete);
+        assert_eq!(
+            std::fs::read(dir.join("notes.txt")).expect("orig"),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("notes (1).txt")).expect("kept"),
+            b"taken"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("notes (2).txt")).expect("copy"),
+            data
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn receive_chunks_bad_hash_fails() {
         let dir = temp_path();
         std::fs::create_dir_all(&dir).expect("dir");
@@ -2368,7 +2467,10 @@ mod tests {
         node.poll();
         node.dial(&peer).expect("redial");
         assert_eq!(node.next_dial_command(), Some(peer.clone()));
-        assert_eq!(node.snapshot().selected_status, Some(PeerStatus::Connecting));
+        assert_eq!(
+            node.snapshot().selected_status,
+            Some(PeerStatus::Connecting)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

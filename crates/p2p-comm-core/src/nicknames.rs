@@ -258,10 +258,7 @@ mod tests {
             resolve_dial(&store, &"g".repeat(64)).unwrap_err(),
             Error::InvalidPeerId
         );
-        assert_eq!(
-            resolve_dial(&store, "").unwrap_err(),
-            Error::InvalidPeerId
-        );
+        assert_eq!(resolve_dial(&store, "").unwrap_err(), Error::InvalidPeerId);
         assert_eq!(
             resolve_dial(&store, &"ab".repeat(31)).unwrap_err(),
             Error::UnknownNickname

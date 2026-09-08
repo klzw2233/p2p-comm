@@ -36,12 +36,8 @@ impl AudioEncoder {
     ///
     /// Opus encoder creation failed.
     pub fn new() -> Result<Self, opus::Error> {
-        opus::Encoder::new(
-            SAMPLE_RATE,
-            opus::Channels::Mono,
-            opus::Application::Voip,
-        )
-        .map(|inner| Self { inner })
+        opus::Encoder::new(SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)
+            .map(|inner| Self { inner })
     }
 
     /// Encode one 20 ms mono frame (`FRAME_SAMPLES` i16 samples).
@@ -92,7 +88,10 @@ mod tests {
         let payload = [1, 2, 3, 4];
         let dgram = pack_audio(0x0102_0304_0506_0708, &payload);
         assert_eq!(dgram[0], 0x01);
-        assert_eq!(&dgram[1..9], &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+        assert_eq!(
+            &dgram[1..9],
+            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        );
         assert_eq!(&dgram[9..], &payload);
         let (ts, rest) = unpack_audio(&dgram).expect("unpack");
         assert_eq!(ts, 0x0102_0304_0506_0708);
