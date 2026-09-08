@@ -13,12 +13,24 @@ pub enum MediaType {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum WireMessage {
-    Text { content: String, timestamp: u64 },
-    FileOffer { name: String, size: u64, hash: String },
+    Text {
+        content: String,
+        timestamp: u64,
+    },
+    FileOffer {
+        name: String,
+        size: u64,
+        hash: String,
+    },
     FileAccept,
     FileReject,
-    FileChunk { offset: u64, data: String },
-    CallInvite { media: MediaType },
+    FileChunk {
+        offset: u64,
+        data: String,
+    },
+    CallInvite {
+        media: MediaType,
+    },
     CallAccept,
     CallReject,
     CallEnd,
@@ -29,7 +41,10 @@ pub enum WireMessage {
 /// Result of decoding one length-prefixed frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decoded {
-    Text { content: String, timestamp: u64 },
+    Text {
+        content: String,
+        timestamp: u64,
+    },
     FileOffer {
         name: String,
         size: u64,
@@ -37,8 +52,13 @@ pub enum Decoded {
     },
     FileAccept,
     FileReject,
-    FileChunk { offset: u64, data: Vec<u8> },
-    CallInvite { media: MediaType },
+    FileChunk {
+        offset: u64,
+        data: Vec<u8>,
+    },
+    CallInvite {
+        media: MediaType,
+    },
     CallAccept,
     CallReject,
     CallEnd,
@@ -112,7 +132,8 @@ pub fn encode_call_end() -> Vec<u8> {
 }
 
 fn encode_json(msg: &WireMessage) -> Vec<u8> {
-    let json = serde_json::to_vec(msg).unwrap_or_else(|_| br#"{"type":"Text","content":"","timestamp":0}"#.to_vec());
+    let json = serde_json::to_vec(msg)
+        .unwrap_or_else(|_| br#"{"type":"Text","content":"","timestamp":0}"#.to_vec());
     let len = u32::try_from(json.len()).unwrap_or(u32::MAX);
     let mut out = Vec::with_capacity(4 + json.len());
     out.extend_from_slice(&len.to_le_bytes());
@@ -220,7 +241,12 @@ mod tests {
         assert_eq!(json, r#"{"type":"CallInvite","media":"Audio"}"#);
         let (decoded, n) = decode_frame(&frame).expect("decode");
         assert_eq!(n, frame.len());
-        assert_eq!(decoded, Decoded::CallInvite { media: MediaType::Audio });
+        assert_eq!(
+            decoded,
+            Decoded::CallInvite {
+                media: MediaType::Audio
+            }
+        );
     }
 
     #[test]
@@ -230,14 +256,20 @@ mod tests {
             std::str::from_utf8(&accept[4..]).expect("utf8"),
             r#"{"type":"CallAccept"}"#
         );
-        assert_eq!(decode_frame(&accept).expect("accept").0, Decoded::CallAccept);
+        assert_eq!(
+            decode_frame(&accept).expect("accept").0,
+            Decoded::CallAccept
+        );
 
         let reject = encode_call_reject();
         assert_eq!(
             std::str::from_utf8(&reject[4..]).expect("utf8"),
             r#"{"type":"CallReject"}"#
         );
-        assert_eq!(decode_frame(&reject).expect("reject").0, Decoded::CallReject);
+        assert_eq!(
+            decode_frame(&reject).expect("reject").0,
+            Decoded::CallReject
+        );
 
         let end = encode_call_end();
         assert_eq!(

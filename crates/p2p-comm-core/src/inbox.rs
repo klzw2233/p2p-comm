@@ -103,9 +103,7 @@ impl Inbox {
 
     #[must_use]
     pub fn messages(&self, peer_id_hex: &str) -> &[ChatMessage] {
-        self.by_peer
-            .get(peer_id_hex)
-            .map_or(&[], Vec::as_slice)
+        self.by_peer.get(peer_id_hex).map_or(&[], Vec::as_slice)
     }
 
     #[must_use]

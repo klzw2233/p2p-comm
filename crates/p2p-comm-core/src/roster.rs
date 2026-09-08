@@ -36,14 +36,16 @@ impl Roster {
     /// Start (or restart) a connect attempt. Selects that Peer.
     pub fn begin_connect(&mut self, peer_id_hex: String) {
         self.errors.remove(&peer_id_hex);
-        self.peers.insert(peer_id_hex.clone(), PeerStatus::Connecting);
+        self.peers
+            .insert(peer_id_hex.clone(), PeerStatus::Connecting);
         self.selected = Some(peer_id_hex);
     }
 
     /// Mark a Peer connected. Inbound unknown Peers land here.
     pub fn connected(&mut self, peer_id_hex: String) {
         self.errors.remove(&peer_id_hex);
-        self.peers.insert(peer_id_hex.clone(), PeerStatus::Connected);
+        self.peers
+            .insert(peer_id_hex.clone(), PeerStatus::Connected);
         if self.selected.is_none() {
             self.selected = Some(peer_id_hex);
         }
