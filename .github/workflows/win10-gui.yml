@@ -11,25 +11,25 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
     - name: Cache cargo registry
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Cache cargo index
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cargo/git
         key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Cache target
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: target
         key: ${{ runner.os }}-release-target-${{ hashFiles('**/Cargo.lock') }}
@@ -38,7 +38,7 @@ jobs:
       run: cargo build --release -p p2p-comm-gui
 
     - name: Upload exe
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: p2p-comm-gui-windows
         path: target/release/p2p-comm-gui.exe
