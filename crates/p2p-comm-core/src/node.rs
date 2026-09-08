@@ -227,6 +227,8 @@ struct Transfer {
     hash: [u8; 32],
     bytes: Vec<u8>,
     buffer: Vec<u8>,
+    /// Next `FileChunk` offset to enqueue. Outbound only.
+    next_offset: u64,
 }
 
 struct IncomingOffer {
@@ -401,18 +403,7 @@ impl Node {
                 IoEvent::SendProgress {
                     peer_id_hex,
                     transferred,
-                } => {
-                    if let Some(xfer) = self.transfers.get_mut(&peer_id_hex) {
-                        if xfer.direction == Direction::Outgoing
-                            && xfer.status == TransferStatus::Transferring
-                        {
-                            xfer.transferred = transferred;
-                            if transferred >= xfer.size {
-                                xfer.status = TransferStatus::Complete;
-                            }
-                        }
-                    }
-                }
+                } => self.handle_send_progress(&peer_id_hex, transferred),
                 IoEvent::SendFailed { peer_id_hex } => {
                     self.inbox.mark_last_failed(&peer_id_hex);
                     self.handle_disconnect(&peer_id_hex);
@@ -551,6 +542,7 @@ impl Node {
                 hash,
                 bytes,
                 buffer: Vec::new(),
+                next_offset: 0,
             },
         );
         Ok(())
@@ -572,6 +564,7 @@ impl Node {
                     hash: offer.hash,
                     bytes: Vec::new(),
                     buffer: Vec::new(),
+                    next_offset: 0,
                 },
             );
             if size == 0 {
@@ -687,6 +680,7 @@ impl Node {
                         hash,
                         bytes: Vec::new(),
                         buffer: Vec::new(),
+                        next_offset: 0,
                     },
                 );
                 if size == 0 {
@@ -708,19 +702,54 @@ impl Node {
         if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
             if xfer.direction == Direction::Outgoing && xfer.status == TransferStatus::Offered {
                 xfer.status = TransferStatus::Transferring;
-                let bytes = std::mem::take(&mut xfer.bytes);
-                if bytes.is_empty() {
+                if xfer.bytes.is_empty() {
                     // Zero-byte file: nothing to queue, nothing on the wire.
                     xfer.status = TransferStatus::Complete;
                     return;
                 }
-                let tx = self.live.get(peer_id_hex).cloned();
-                let peer = peer_id_hex.to_owned();
-                let io_tx = self.io_tx.clone();
-                self.workers.push(tokio::spawn(async move {
-                    send_chunks(&peer, &bytes, tx, &io_tx);
-                }));
+                xfer.next_offset = 0;
+                self.enqueue_next_chunk(peer_id_hex);
             }
+        }
+    }
+
+    /// Enqueue at most one 64KiB `FileChunk`. The next waits for `SendProgress`.
+    fn enqueue_next_chunk(&mut self, peer_id_hex: &str) {
+        let Some(xfer) = self.transfers.get_mut(peer_id_hex) else {
+            return;
+        };
+        if xfer.direction != Direction::Outgoing || xfer.status != TransferStatus::Transferring {
+            return;
+        }
+        let offset = usize::try_from(xfer.next_offset).unwrap_or(usize::MAX);
+        if offset >= xfer.bytes.len() {
+            return;
+        }
+        let end = (offset + CHUNK).min(xfer.bytes.len());
+        let frame = encode_file_chunk(xfer.next_offset, &xfer.bytes[offset..end]);
+        xfer.next_offset = u64::try_from(end).unwrap_or(u64::MAX);
+        self.send_to_live(peer_id_hex, frame);
+    }
+
+    fn handle_send_progress(&mut self, peer_id_hex: &str, transferred: u64) {
+        let enqueue = {
+            let Some(xfer) = self.transfers.get_mut(peer_id_hex) else {
+                return;
+            };
+            if xfer.direction != Direction::Outgoing || xfer.status != TransferStatus::Transferring {
+                return;
+            }
+            xfer.transferred = transferred;
+            if transferred >= xfer.size {
+                xfer.status = TransferStatus::Complete;
+                xfer.bytes = Vec::new();
+                false
+            } else {
+                true
+            }
+        };
+        if enqueue {
+            self.enqueue_next_chunk(peer_id_hex);
         }
     }
 
@@ -1393,31 +1422,6 @@ fn io_event(peer_id_hex: &str, decoded: Decoded) -> Option<IoEvent> {
     }
 }
 
-fn send_chunks(
-    peer_id_hex: &str,
-    bytes: &[u8],
-    tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
-    events: &mpsc::UnboundedSender<IoEvent>,
-) {
-    let Some(tx) = tx else {
-        return;
-    };
-    let mut offset = 0u64;
-    for chunk in bytes.chunks(CHUNK) {
-        let frame = encode_file_chunk(offset, chunk);
-        if tx.send(frame).is_err() {
-            // Session died; the Disconnected event fails the transfer.
-            let _ = events.send(IoEvent::SendFailed {
-                peer_id_hex: peer_id_hex.to_owned(),
-            });
-            return;
-        }
-        offset += chunk.len() as u64;
-    }
-    // No "done" event here: the sender's transfer completes when
-    // session_loop reports the last chunk actually on the wire.
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1644,20 +1648,18 @@ mod tests {
         node.send_file(&peer, &src).expect("offer");
         let _ = rx.try_recv().expect("offer frame");
         node.push_incoming_bytes(&peer, &encode_file_accept());
-        node.poll();
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        node.poll();
-        let mut chunks = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            if let Ok((Decoded::FileChunk { offset, data }, _)) = decode_frame(&frame) {
-                chunks.push((offset, data));
+        let (decoded, _) = decode_frame(&rx.try_recv().expect("chunk 0")).expect("decode");
+        match decoded {
+            Decoded::FileChunk { offset, data } => {
+                assert_eq!(offset, 0);
+                assert_eq!(data.len(), 64 * 1024);
             }
+            other => panic!("expected FileChunk, got {other:?}"),
         }
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].0, 0);
-        assert_eq!(chunks[0].1.len(), 64 * 1024);
-        assert_eq!(chunks[1].0, 64 * 1024);
-        assert_eq!(chunks[1].1.len(), 64 * 1024);
+        assert!(
+            rx.try_recv().is_err(),
+            "second chunk must not occupy the queue before the first is written"
+        );
         // Sender progress arrives as session_loop reports bytes on the wire.
         let _ = node.io_tx.send(IoEvent::SendProgress {
             peer_id_hex: peer.clone(),
@@ -1668,6 +1670,14 @@ mod tests {
             node.snapshot().transfer.expect("xfer").transferred,
             64 * 1024
         );
+        let (decoded, _) = decode_frame(&rx.try_recv().expect("chunk 1")).expect("decode");
+        match decoded {
+            Decoded::FileChunk { offset, data } => {
+                assert_eq!(offset, 64 * 1024);
+                assert_eq!(data.len(), 64 * 1024);
+            }
+            other => panic!("expected FileChunk, got {other:?}"),
+        }
         let _ = node.io_tx.send(IoEvent::SendProgress {
             peer_id_hex: peer.clone(),
             transferred: 128 * 1024,
@@ -1676,6 +1686,133 @@ mod tests {
         let xfer = node.snapshot().transfer.expect("xfer");
         assert_eq!(xfer.status, TransferStatus::Complete);
         assert_eq!(xfer.transferred, 128 * 1024);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn text_can_interleave_between_file_chunks() {
+        let dir = temp_path();
+        let src = dir.join("test.bin");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(&src, vec![0xaa; 128 * 1024]).expect("write");
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.send_file(&peer, &src).expect("offer");
+        let _ = rx.try_recv().expect("offer frame");
+        node.push_incoming_bytes(&peer, &encode_file_accept());
+
+        let (decoded, _) = decode_frame(&rx.try_recv().expect("chunk 0")).expect("decode");
+        match decoded {
+            Decoded::FileChunk { offset, data } => {
+                assert_eq!(offset, 0);
+                assert_eq!(data.len(), 64 * 1024);
+            }
+            other => panic!("expected FileChunk, got {other:?}"),
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "second chunk must not occupy the queue before the first is written"
+        );
+
+        node.send_text(&peer, "hello").expect("text");
+        let _ = node.io_tx.send(IoEvent::SendProgress {
+            peer_id_hex: peer.clone(),
+            transferred: 64 * 1024,
+        });
+        node.poll();
+
+        let (decoded, _) = decode_frame(&rx.try_recv().expect("text")).expect("decode");
+        match decoded {
+            Decoded::Text { content, .. } => assert_eq!(content, "hello"),
+            other => panic!("expected Text between chunks, got {other:?}"),
+        }
+        let (decoded, _) = decode_frame(&rx.try_recv().expect("chunk 1")).expect("decode");
+        match decoded {
+            Decoded::FileChunk { offset, data } => {
+                assert_eq!(offset, 64 * 1024);
+                assert_eq!(data.len(), 64 * 1024);
+            }
+            other => panic!("expected FileChunk, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn call_end_can_interleave_between_file_chunks() {
+        let dir = temp_path();
+        let src = dir.join("test.bin");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(&src, vec![0xaa; 128 * 1024]).expect("write");
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.invite_audio(&peer).expect("invite");
+        let (decoded, _) = decode_frame(&rx.try_recv().expect("invite")).expect("decode");
+        assert!(matches!(decoded, Decoded::CallInvite { .. }));
+        node.send_file(&peer, &src).expect("offer");
+        let _ = rx.try_recv().expect("offer frame");
+        node.push_incoming_bytes(&peer, &encode_file_accept());
+
+        let (decoded, _) = decode_frame(&rx.try_recv().expect("chunk 0")).expect("decode");
+        assert!(matches!(decoded, Decoded::FileChunk { offset: 0, .. }));
+        assert!(
+            rx.try_recv().is_err(),
+            "second chunk must not occupy the queue before the first is written"
+        );
+
+        node.hangup();
+        let _ = node.io_tx.send(IoEvent::SendProgress {
+            peer_id_hex: peer.clone(),
+            transferred: 64 * 1024,
+        });
+        node.poll();
+
+        let (decoded, _) = decode_frame(&rx.try_recv().expect("end")).expect("decode");
+        assert_eq!(decoded, Decoded::CallEnd);
+        let (decoded, _) = decode_frame(&rx.try_recv().expect("chunk 1")).expect("decode");
+        match decoded {
+            Decoded::FileChunk { offset, data } => {
+                assert_eq!(offset, 64 * 1024);
+                assert_eq!(data.len(), 64 * 1024);
+            }
+            other => panic!("expected FileChunk, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn outbound_zero_byte_file_completes_without_chunks() {
+        let dir = temp_path();
+        let src = dir.join("empty.txt");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(&src, b"").expect("write");
+        let mut node = Node::test_node(&dir, "correct-horse").expect("node");
+        let peer = valid_peer_hex();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(peer.clone(), tx);
+        node.select(&peer);
+        node.send_file(&peer, &src).expect("offer");
+        let (decoded, _) = decode_frame(&rx.try_recv().expect("offer")).expect("decode");
+        match decoded {
+            Decoded::FileOffer { name, size, .. } => {
+                assert_eq!(name, "empty.txt");
+                assert_eq!(size, 0);
+            }
+            other => panic!("expected FileOffer, got {other:?}"),
+        }
+        node.push_incoming_bytes(&peer, &encode_file_accept());
+        assert!(
+            rx.try_recv().is_err(),
+            "zero-byte file must not emit FileChunk"
+        );
+        let xfer = node.snapshot().transfer.expect("xfer");
+        assert_eq!(xfer.status, TransferStatus::Complete);
+        assert_eq!(xfer.transferred, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

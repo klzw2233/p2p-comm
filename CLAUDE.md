@@ -56,7 +56,7 @@ GitHub Actions 矩阵（`.github/workflows/ci.yml`）:
 - **回声消除**: 不做，README 写明"请用耳机"
 - **Relay**: v1 用 P2PCore `RelayConfig::n0_public()`。n0 公共 relay 是 hobby（无 SLA、有限速）；生产需自建
 - **视频数据报**: NAL 必须 ≤ `Session::max_datagram_size() - 9`；丢包花屏可接受
-- **文件 HOL**: FileChunk 与文字/信令共用 Session 唯一可靠流
+- **文件 HOL**: FileChunk 与文字/信令共用 Session 唯一可靠流。出站一次只排队一块 64KiB
 
 ## Agent skills
 

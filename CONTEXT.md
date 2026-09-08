@@ -34,7 +34,7 @@
 
 **v1 包含**:
 - 文字消息（可靠流，帧格式同 p2p-chat ADR-0001）
-- 文件传输（同一条可靠流；Verified 自动接收 / TOFU 弹窗 / Untrusted 拒绝）。传文件期间文字/信令会排队，这是 v1 已知限制
+- 文件传输（同一条可靠流；Verified 自动接收 / TOFU 弹窗 / Untrusted 拒绝）。传文件期间文字/信令会等当前 64KiB FileChunk 写完，这是 v1 已知限制
 - 语音通话（Opus 编解码，数据报传输）
 - 视频通话（H.264/openh264，数据报；slice 限制在 `Session::max_datagram_size()` 减去 9 字节头以内；丢包花屏可接受）
 - 本地昵称表（JSON 存储）
