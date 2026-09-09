@@ -107,7 +107,6 @@ impl eframe::App for App {
                     || snap.pending_offer.is_some()
                     || snap.pending_invite.is_some()
                     || snap.selected_status == Some(PeerStatus::Connecting)
-                    || snap.selected_status == Some(PeerStatus::Connected)
                 {
                     ctx.request_repaint();
                 } else {
