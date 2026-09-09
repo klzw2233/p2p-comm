@@ -133,10 +133,28 @@ impl Drop for LiveMedia {
             let _ = h.join();
         }
         if let Some(h) = self.video.take() {
-            // ponytail: detached join so hangup isn't blocked on camera.frame(); join-with-timeout if LED must go off first.
-            let _ = h;
+            join_with_timeout(h, std::time::Duration::from_millis(500));
         }
     }
+}
+
+/// Join `h` up to `timeout`. Past that, detach so hangup isn't blocked on `camera.frame()`.
+/// Stop is already set; the capture thread still calls `stop_stream` when `frame()` returns.
+// ponytail: 500ms join; detach after that so GUI isn't stuck on camera.frame()
+fn join_with_timeout(h: std::thread::JoinHandle<()>, timeout: std::time::Duration) {
+    if h.is_finished() {
+        let _ = h.join();
+        return;
+    }
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("p2p-video-join".into())
+        .spawn(move || {
+            let _ = h.join();
+            let _ = done_tx.send(());
+        })
+        .ok();
+    let _ = done_rx.recv_timeout(timeout);
 }
 
 fn encode_loop(
