@@ -477,6 +477,9 @@ impl Node {
 
     /// Switch the chat view without closing the Session.
     pub fn select(&mut self, peer_id_hex: &str) {
+        if self.roster.selected() != Some(peer_id_hex) {
+            self.call_result = None;
+        }
         self.roster.select(peer_id_hex);
         self.inbox.clear_unread(peer_id_hex);
         self.ensure_history(peer_id_hex);
@@ -492,6 +495,13 @@ impl Node {
         let content = content.trim();
         if content.is_empty() {
             return Ok(());
+        }
+        if self
+            .call_result
+            .as_ref()
+            .is_some_and(|(p, _)| p == peer_id_hex)
+        {
+            self.call_result = None;
         }
         let tx = self.live.get(peer_id_hex).ok_or(Error::NotConnected)?;
         let timestamp = unix_millis();
@@ -2534,6 +2544,62 @@ mod tests {
             peer_id_hex: peer.clone(),
         });
         node.poll();
+        assert!(node.snapshot().call.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn call_result_is_only_for_that_peer_and_clears_on_select() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.invite_audio(&peer).expect("invite");
+        let _ = rx.try_recv();
+        node.push_incoming_bytes(&peer, &encode_call_reject());
+        assert_eq!(node.snapshot().call_result, Some(CallResult::Rejected));
+        let other = valid_peer_hex();
+        let (tx, _other_rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(other.clone(), tx);
+        node.select(&other);
+        assert!(node.snapshot().call_result.is_none());
+        node.select(&peer);
+        assert!(
+            node.snapshot().call_result.is_none(),
+            "coming back must not revive the old result"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_text_clears_call_result() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.invite_audio(&peer).expect("invite");
+        let _ = rx.try_recv();
+        node.push_incoming_bytes(&peer, &encode_call_reject());
+        assert_eq!(node.snapshot().call_result, Some(CallResult::Rejected));
+        node.send_text(&peer, "hi").expect("text");
+        assert!(node.snapshot().call_result.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hangup_sends_end_when_another_peer_is_selected() {
+        let dir = temp_path();
+        let (mut node, peer, mut rx) = connected_node(&dir);
+        node.invite_audio(&peer).expect("invite");
+        let _ = rx.try_recv();
+        node.push_incoming_bytes(&peer, &encode_call_accept());
+        let other = valid_peer_hex();
+        let (tx, _other_rx) = mpsc::unbounded_channel();
+        node.attach_byte_sink(other.clone(), tx);
+        node.select(&other);
+        assert_eq!(
+            node.snapshot().call.expect("still active").peer_id_hex,
+            peer
+        );
+        node.hangup();
+        let frame = rx.try_recv().expect("end");
+        assert_eq!(decode_frame(&frame).expect("decode").0, Decoded::CallEnd);
         assert!(node.snapshot().call.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }

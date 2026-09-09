@@ -465,6 +465,10 @@ fn call_bar(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot, peer: &str
         }
         Some(_) => {
             ui.label("Busy on another call");
+            if ui.button("Hang up").clicked() {
+                main.node.hangup();
+                main.video_tex = None;
+            }
         }
         None => {
             let connected = snap.selected_status == Some(PeerStatus::Connected);
