@@ -108,9 +108,8 @@ pub fn unlock(password: &str) -> Result<Identity, Error> {
 /// * [`Error::CorruptStore`] if the key file is malformed
 pub fn unlock_in(dir: &Path, password: &str) -> Result<Identity, Error> {
     let key = unlock_key(dir, password)?;
-    let hex_string = to_hex(key.peer_id().as_bytes());
     Ok(Identity {
-        peer_id_hex: PeerIdHex::new(hex_string).expect("generated peer_id is always valid"),
+        peer_id_hex: PeerIdHex::from_peer_id(&key.peer_id()),
     })
 }
 
@@ -163,8 +162,7 @@ pub(crate) fn parse_peer_id_hex(input: &str) -> Result<(PeerId, PeerIdHex), Erro
         bytes[i] = u8::from_str_radix(hex, 16).map_err(|_| Error::InvalidPeerId)?;
     }
     let peer = PeerId::from_bytes(bytes).map_err(|_| Error::InvalidPeerId)?;
-    let hex_string = to_hex(&bytes);
-    let peer_id_hex = PeerIdHex::new(hex_string).expect("parsed peer_id is always valid");
+    let peer_id_hex = PeerIdHex::from_peer_id(&peer);
     Ok((peer, peer_id_hex))
 }
 
@@ -188,8 +186,7 @@ pub(crate) mod tests_support {
     }
 
     pub(crate) fn valid_peer_hex() -> PeerIdHex {
-        let hex = crate::to_hex(IdentityKey::generate().peer_id().as_bytes());
-        PeerIdHex::new(hex).expect("generated peer_id is always valid")
+        PeerIdHex::from_peer_id(&IdentityKey::generate().peer_id())
     }
 }
 

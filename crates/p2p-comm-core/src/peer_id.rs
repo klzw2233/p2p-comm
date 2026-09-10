@@ -1,3 +1,4 @@
+use p2p_trust::PeerId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -9,7 +10,12 @@ use std::str::FromStr;
 pub struct PeerIdHex(String);
 
 impl PeerIdHex {
-    /// Create a validated PeerIdHex from a String.
+    /// Hex-encode a `PeerId`. Infallible: 32 bytes always yield 64 hex chars.
+    pub(crate) fn from_peer_id(peer: &PeerId) -> Self {
+        Self(crate::to_hex(peer.as_bytes()))
+    }
+
+    /// Create a validated `PeerIdHex` from a String.
     ///
     /// # Errors
     ///
@@ -102,6 +108,6 @@ mod tests {
     fn display_shows_full_hex() {
         let input = "f".repeat(64);
         let peer_id = PeerIdHex::new(input.clone()).expect("valid");
-        assert_eq!(format!("{}", peer_id), input);
+        assert_eq!(format!("{peer_id}"), input);
     }
 }

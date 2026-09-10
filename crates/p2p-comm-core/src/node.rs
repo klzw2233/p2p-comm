@@ -19,7 +19,7 @@ use crate::inbox::{ChatMessage, Direction, Inbox};
 use crate::nicknames::{resolve_dial, NicknameStore};
 use crate::roster::{ChatError, PeerStatus, Roster};
 use crate::video::{max_nal_len, VideoFrame, DEFAULT_MAX_DATAGRAM};
-use crate::{map_trust, to_hex, PeerIdHex, Error};
+use crate::{map_trust, PeerIdHex, Error};
 
 /// How long the caller waits for `CallAccept` before giving up.
 const INVITE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -292,8 +292,7 @@ impl Node {
     /// * [`Error::Io`] / [`Error::CorruptStore`] from chat salt
     pub async fn start(dir: &Path, password: &str) -> Result<Self, Error> {
         let identity = crate::unlock_key(dir, password)?;
-        let hex_string = to_hex(identity.peer_id().as_bytes());
-        let local_peer_id_hex = PeerIdHex::new(hex_string).expect("generated peer_id is always valid");
+        let local_peer_id_hex = PeerIdHex::from_peer_id(&identity.peer_id());
         let mut key_store = FileKeyStore::new(dir, password.as_bytes());
         let trust = FileTrustStore::open(dir, identity).map_err(map_trust)?;
         let endpoint = Endpoint::bind(&mut key_store, Box::new(trust), RelayConfig::n0_public())
@@ -1009,8 +1008,7 @@ impl Node {
     #[cfg(test)]
     pub(crate) fn test_node(dir: &Path, password: &str) -> Result<Self, Error> {
         let identity = crate::unlock_key(dir, password)?;
-        let hex = to_hex(identity.peer_id().as_bytes());
-        let local_peer_id_hex = PeerIdHex::new(hex).expect("valid peer_id");
+        let local_peer_id_hex = PeerIdHex::from_peer_id(&identity.peer_id());
         let nicknames = NicknameStore::load(dir)?;
         let keys = ChatKeys::unlock(dir, password)?;
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -1310,8 +1308,7 @@ async fn accept_loop(endpoint: Arc<Endpoint>, events: mpsc::UnboundedSender<Even
     loop {
         match endpoint.accept().await {
             Ok(session) => {
-                let hex = to_hex(session.remote_peer_id().as_bytes());
-                let hex = PeerIdHex::new(hex).expect("valid peer_id from session");
+                let hex = PeerIdHex::from_peer_id(&session.remote_peer_id());
                 let trust = trust_of(&endpoint, &session.remote_peer_id());
                 if events
                     .send(Event::SessionReady {
@@ -1468,11 +1465,6 @@ mod tests {
     use super::*;
     use crate::nicknames::{short_id, NicknameStore};
     use crate::tests_support::{temp_path, valid_peer_hex};
-
-    fn test_peer_id(s: &str) -> PeerIdHex {
-        let hex = s.repeat(64 / s.len());
-        hex.parse().expect("valid test peer_id")
-    }
 
     #[test]
     fn sidebar_shows_nickname_or_short_id() {
