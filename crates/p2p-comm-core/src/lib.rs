@@ -9,6 +9,7 @@ mod frame;
 mod inbox;
 mod nicknames;
 mod node;
+mod peer_id;
 mod roster;
 mod video;
 mod video_io;
@@ -25,19 +26,20 @@ pub use node::{
     CallPhase, CallResult, CallView, FileProgress, Node, PendingInvite, PendingOffer, SidebarItem,
     Snapshot, TransferStatus,
 };
+pub use peer_id::PeerIdHex;
 pub use roster::{ChatError, PeerStatus};
 pub use video::VideoFrame;
 
 /// Unlocked local identity. The secret seed is not retained.
 #[derive(Debug)]
 pub struct Identity {
-    peer_id_hex: String,
+    peer_id_hex: PeerIdHex,
 }
 
 impl Identity {
     /// 64-character lowercase hex encoding of this device's Peer ID.
     #[must_use]
-    pub fn peer_id_hex(&self) -> &str {
+    pub fn peer_id_hex(&self) -> &PeerIdHex {
         &self.peer_id_hex
     }
 }
@@ -107,7 +109,7 @@ pub fn unlock(password: &str) -> Result<Identity, Error> {
 pub fn unlock_in(dir: &Path, password: &str) -> Result<Identity, Error> {
     let key = unlock_key(dir, password)?;
     Ok(Identity {
-        peer_id_hex: to_hex(key.peer_id().as_bytes()),
+        peer_id_hex: PeerIdHex::from_peer_id(&key.peer_id()),
     })
 }
 
@@ -149,7 +151,7 @@ pub(crate) fn looks_like_hex_id(input: &str) -> bool {
     input.len() == 64 && input.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-pub(crate) fn parse_peer_id_hex(input: &str) -> Result<(PeerId, String), Error> {
+pub(crate) fn parse_peer_id_hex(input: &str) -> Result<(PeerId, PeerIdHex), Error> {
     if !looks_like_hex_id(input) {
         return Err(Error::InvalidPeerId);
     }
@@ -160,7 +162,8 @@ pub(crate) fn parse_peer_id_hex(input: &str) -> Result<(PeerId, String), Error> 
         bytes[i] = u8::from_str_radix(hex, 16).map_err(|_| Error::InvalidPeerId)?;
     }
     let peer = PeerId::from_bytes(bytes).map_err(|_| Error::InvalidPeerId)?;
-    Ok((peer, to_hex(&bytes)))
+    let peer_id_hex = PeerIdHex::from_peer_id(&peer);
+    Ok((peer, peer_id_hex))
 }
 
 #[cfg(test)]
@@ -169,6 +172,8 @@ pub(crate) mod tests_support {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use p2p_trust::IdentityKey;
+
+    use crate::PeerIdHex;
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -180,8 +185,8 @@ pub(crate) mod tests_support {
         ))
     }
 
-    pub(crate) fn valid_peer_hex() -> String {
-        crate::to_hex(IdentityKey::generate().peer_id().as_bytes())
+    pub(crate) fn valid_peer_hex() -> PeerIdHex {
+        PeerIdHex::from_peer_id(&IdentityKey::generate().peer_id())
     }
 }
 
@@ -202,9 +207,10 @@ mod tests {
     fn new_user_creates_encrypted_identity() {
         let dir = temp_path();
         let identity = unlock_in(&dir, "correct-horse").expect("create");
-        assert_eq!(identity.peer_id_hex().len(), 64);
+        assert_eq!(identity.peer_id_hex().as_str().len(), 64);
         assert!(identity
             .peer_id_hex()
+            .as_str()
             .chars()
             .all(|c| c.is_ascii_hexdigit()));
         assert!(dir.is_dir());

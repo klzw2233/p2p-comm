@@ -196,15 +196,15 @@ mod tests {
         let dir = temp_path();
         let peer = valid_peer_hex();
         let keys = ChatKeys::unlock(&dir, "correct-horse").expect("unlock");
-        keys.append(&peer, &msg("hi", 1, true)).expect("append");
-        keys.append(&peer, &msg("yo", 2, false)).expect("append");
-        let loaded = keys.load(&peer).expect("load");
+        keys.append(peer.as_str(), &msg("hi", 1, true)).expect("append");
+        keys.append(peer.as_str(), &msg("yo", 2, false)).expect("append");
+        let loaded = keys.load(peer.as_str()).expect("load");
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].content, "hi");
         assert_eq!(loaded[1].content, "yo");
 
         let again = ChatKeys::unlock(&dir, "correct-horse").expect("reunlock");
-        let loaded = again.load(&peer).expect("reload");
+        let loaded = again.load(peer.as_str()).expect("reload");
         assert_eq!(loaded[0].content, "hi");
         assert_eq!(loaded[1].direction, Direction::Incoming);
         let _ = fs::remove_dir_all(&dir);
@@ -215,7 +215,7 @@ mod tests {
         let dir = temp_path();
         let peer = valid_peer_hex();
         let keys = ChatKeys::unlock(&dir, "correct-horse").expect("unlock");
-        keys.append(&peer, &msg("secret-payload", 1, true))
+        keys.append(peer.as_str(), &msg("secret-payload", 1, true))
             .expect("append");
         let raw = fs::read_to_string(dir.join(format!("{peer}.jsonl"))).expect("read");
         assert!(!raw.contains("secret-payload"));
@@ -229,11 +229,11 @@ mod tests {
         let a = valid_peer_hex();
         let b = valid_peer_hex();
         let keys = ChatKeys::unlock(&dir, "correct-horse").expect("unlock");
-        keys.append(&a, &msg("for-a", 1, true)).expect("a");
-        keys.append(&b, &msg("for-b", 1, true)).expect("b");
-        assert_eq!(keys.load(&a).expect("a")[0].content, "for-a");
-        assert_eq!(keys.load(&b).expect("b")[0].content, "for-b");
-        assert_eq!(keys.load(&a).expect("a").len(), 1);
+        keys.append(a.as_str(), &msg("for-a", 1, true)).expect("a");
+        keys.append(b.as_str(), &msg("for-b", 1, true)).expect("b");
+        assert_eq!(keys.load(a.as_str()).expect("a")[0].content, "for-a");
+        assert_eq!(keys.load(b.as_str()).expect("b")[0].content, "for-b");
+        assert_eq!(keys.load(a.as_str()).expect("a").len(), 1);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -242,9 +242,9 @@ mod tests {
         let dir = temp_path();
         let peer = valid_peer_hex();
         let keys = ChatKeys::unlock(&dir, "correct-horse").expect("unlock");
-        keys.append(&peer, &msg("hi", 1, true)).expect("append");
+        keys.append(peer.as_str(), &msg("hi", 1, true)).expect("append");
         let wrong = ChatKeys::unlock(&dir, "wrong-battery").expect("wrong still opens salt");
-        assert_eq!(wrong.load(&peer).unwrap_err(), Error::DecryptFailed);
+        assert_eq!(wrong.load(peer.as_str()).unwrap_err(), Error::DecryptFailed);
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -19,7 +19,7 @@ use crate::inbox::{ChatMessage, Direction, Inbox};
 use crate::nicknames::{resolve_dial, NicknameStore};
 use crate::roster::{ChatError, PeerStatus, Roster};
 use crate::video::{max_nal_len, VideoFrame, DEFAULT_MAX_DATAGRAM};
-use crate::{map_trust, to_hex, Error};
+use crate::{map_trust, PeerIdHex, Error};
 
 /// How long the caller waits for `CallAccept` before giving up.
 const INVITE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -37,69 +37,69 @@ const N0_RELAY_URLS: &[&str] = &[
 ];
 
 enum Command {
-    Dial(PeerId, String),
+    Dial(PeerId, PeerIdHex),
 }
 
 enum Event {
     SessionReady {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         session: Session,
         trust: TrustState,
     },
     ConnectFailed {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         message: String,
     },
 }
 
 enum IoEvent {
     Incoming {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         content: String,
         timestamp: u64,
     },
     FileOffer {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         name: String,
         size: u64,
         hash: [u8; 32],
     },
     FileAccept {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
     },
     FileReject {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
     },
     FileChunk {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         offset: u64,
         data: Vec<u8>,
     },
     SendProgress {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         transferred: u64,
     },
     SendFailed {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
     },
     Disconnected {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
     },
     CallInvite {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         media: MediaType,
     },
     CallAccept {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
     },
     CallReject {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
     },
     CallEnd {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
     },
     Datagram {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         bytes: Vec<u8>,
     },
 }
@@ -107,7 +107,7 @@ enum IoEvent {
 /// One row in the sidebar: nickname or Peer ID prefix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidebarItem {
-    pub peer_id_hex: String,
+    pub peer_id_hex: PeerIdHex,
     pub label: String,
     pub unread: u32,
 }
@@ -135,7 +135,7 @@ pub struct FileProgress {
 /// An inbound TOFU file offer awaiting accept/reject, for any Peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingOffer {
-    pub peer_id_hex: String,
+    pub peer_id_hex: PeerIdHex,
     pub name: String,
     pub size: u64,
 }
@@ -158,7 +158,7 @@ pub enum CallResult {
 /// Snapshot of the process-wide call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallView {
-    pub peer_id_hex: String,
+    pub peer_id_hex: PeerIdHex,
     pub media: MediaType,
     pub phase: CallPhase,
 }
@@ -166,28 +166,28 @@ pub struct CallView {
 /// An inbound call invite awaiting accept/reject.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingInvite {
-    pub peer_id_hex: String,
+    pub peer_id_hex: PeerIdHex,
     pub media: MediaType,
 }
 
 enum CallState {
     Outgoing {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         media: MediaType,
         deadline: Instant,
     },
     Incoming {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         media: MediaType,
     },
     Active {
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         media: MediaType,
     },
 }
 
 impl CallState {
-    fn peer(&self) -> &str {
+    fn peer(&self) -> &PeerIdHex {
         match self {
             Self::Outgoing { peer_id_hex, .. }
             | Self::Incoming { peer_id_hex, .. }
@@ -242,9 +242,9 @@ const CHUNK: usize = 64 * 1024;
 /// Immutable view of the node for the GUI thread.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
-    pub local_peer_id_hex: String,
+    pub local_peer_id_hex: PeerIdHex,
     pub sidebar: Vec<SidebarItem>,
-    pub selected: Option<String>,
+    pub selected: Option<PeerIdHex>,
     pub selected_status: Option<PeerStatus>,
     pub selected_error: Option<ChatError>,
     pub messages: Vec<ChatMessage>,
@@ -257,21 +257,21 @@ pub struct Snapshot {
 
 /// Headless node: nicknames + sessions + dial/accept + text.
 pub struct Node {
-    local_peer_id_hex: String,
+    local_peer_id_hex: PeerIdHex,
     nicknames: NicknameStore,
     roster: Roster,
     inbox: Inbox,
     keys: ChatKeys,
-    live: HashMap<String, mpsc::UnboundedSender<Vec<u8>>>,
-    transfers: HashMap<String, Transfer>,
-    pending: HashMap<String, IncomingOffer>,
-    trust: HashMap<String, TrustState>,
+    live: HashMap<PeerIdHex, mpsc::UnboundedSender<Vec<u8>>>,
+    transfers: HashMap<PeerIdHex, Transfer>,
+    pending: HashMap<PeerIdHex, IncomingOffer>,
+    trust: HashMap<PeerIdHex, TrustState>,
     download_dir: std::path::PathBuf,
     call: Option<CallState>,
     media: Option<LiveMedia>,
-    dgram_tx: HashMap<String, mpsc::UnboundedSender<Vec<u8>>>,
-    max_dgram: HashMap<String, usize>,
-    call_result: Option<(String, CallResult)>,
+    dgram_tx: HashMap<PeerIdHex, mpsc::UnboundedSender<Vec<u8>>>,
+    max_dgram: HashMap<PeerIdHex, usize>,
+    call_result: Option<(PeerIdHex, CallResult)>,
     workers: Vec<JoinHandle<()>>,
     commands: mpsc::UnboundedSender<Command>,
     #[cfg(test)]
@@ -292,7 +292,7 @@ impl Node {
     /// * [`Error::Io`] / [`Error::CorruptStore`] from chat salt
     pub async fn start(dir: &Path, password: &str) -> Result<Self, Error> {
         let identity = crate::unlock_key(dir, password)?;
-        let local_peer_id_hex = to_hex(identity.peer_id().as_bytes());
+        let local_peer_id_hex = PeerIdHex::from_peer_id(&identity.peer_id());
         let mut key_store = FileKeyStore::new(dir, password.as_bytes());
         let trust = FileTrustStore::open(dir, identity).map_err(map_trust)?;
         let endpoint = Endpoint::bind(&mut key_store, Box::new(trust), RelayConfig::n0_public())
@@ -379,11 +379,11 @@ impl Node {
                         direction: Direction::Incoming,
                         failed: false,
                     };
-                    let selected = self.roster.selected().map(str::to_owned);
+                    let selected = self.roster.selected().cloned();
                     let _ = self.inbox.received(
                         &peer_id_hex,
                         msg,
-                        selected.as_deref(),
+                        selected.as_ref(),
                         Some(&self.keys),
                     );
                 }
@@ -447,7 +447,7 @@ impl Node {
             }),
             _ => None,
         };
-        snap.call_result = snap.selected.as_deref().and_then(|peer| {
+        snap.call_result = snap.selected.as_ref().and_then(|peer| {
             self.call_result
                 .as_ref()
                 .and_then(|(p, r)| (p == peer).then_some(*r))
@@ -476,7 +476,7 @@ impl Node {
     }
 
     /// Switch the chat view without closing the Session.
-    pub fn select(&mut self, peer_id_hex: &str) {
+    pub fn select(&mut self, peer_id_hex: &PeerIdHex) {
         if self.roster.selected() != Some(peer_id_hex) {
             self.call_result = None;
         }
@@ -491,7 +491,7 @@ impl Node {
     ///
     /// * [`Error::NotConnected`] if there is no live Session
     /// * [`Error::Io`] if the log cannot be written
-    pub fn send_text(&mut self, peer_id_hex: &str, content: &str) -> Result<(), Error> {
+    pub fn send_text(&mut self, peer_id_hex: &PeerIdHex, content: &str) -> Result<(), Error> {
         let content = content.trim();
         if content.is_empty() {
             return Ok(());
@@ -526,7 +526,7 @@ impl Node {
     ///
     /// * [`Error::NotConnected`] if there is no live Session
     /// * [`Error::Io`] if the file cannot be read
-    pub fn send_file(&mut self, peer_id_hex: &str, path: &Path) -> Result<(), Error> {
+    pub fn send_file(&mut self, peer_id_hex: &PeerIdHex, path: &Path) -> Result<(), Error> {
         let tx = self.live.get(peer_id_hex).ok_or(Error::NotConnected)?;
         let bytes = std::fs::read(path).map_err(|_| Error::Io)?;
         let size = u64::try_from(bytes.len()).map_err(|_| Error::Io)?;
@@ -542,7 +542,7 @@ impl Node {
             return Err(Error::NotConnected);
         }
         self.transfers.insert(
-            peer_id_hex.to_owned(),
+            peer_id_hex.clone(),
             Transfer {
                 name,
                 size,
@@ -559,12 +559,12 @@ impl Node {
     }
 
     /// Accept a pending TOFU file offer.
-    pub fn accept_file(&mut self, peer_id_hex: &str) {
+    pub fn accept_file(&mut self, peer_id_hex: &PeerIdHex) {
         if let Some(offer) = self.pending.remove(peer_id_hex) {
             self.send_to_live(peer_id_hex, encode_file_accept());
             let size = offer.size;
             self.transfers.insert(
-                peer_id_hex.to_owned(),
+                peer_id_hex.clone(),
                 Transfer {
                     name: offer.name,
                     size,
@@ -585,7 +585,7 @@ impl Node {
     }
 
     /// Reject a pending TOFU file offer.
-    pub fn reject_file(&mut self, peer_id_hex: &str) {
+    pub fn reject_file(&mut self, peer_id_hex: &PeerIdHex) {
         if self.pending.remove(peer_id_hex).is_some() {
             self.send_to_live(peer_id_hex, encode_file_reject());
         }
@@ -597,7 +597,7 @@ impl Node {
     ///
     /// * [`Error::NotConnected`] if there is no live Session
     /// * [`Error::Busy`] if a call is already in progress
-    pub fn invite_audio(&mut self, peer_id_hex: &str) -> Result<(), Error> {
+    pub fn invite_audio(&mut self, peer_id_hex: &PeerIdHex) -> Result<(), Error> {
         self.invite(peer_id_hex, MediaType::Audio)
     }
 
@@ -607,11 +607,11 @@ impl Node {
     ///
     /// * [`Error::NotConnected`] if there is no live Session
     /// * [`Error::Busy`] if a call is already in progress
-    pub fn invite_video(&mut self, peer_id_hex: &str) -> Result<(), Error> {
+    pub fn invite_video(&mut self, peer_id_hex: &PeerIdHex) -> Result<(), Error> {
         self.invite(peer_id_hex, MediaType::AudioVideo)
     }
 
-    fn invite(&mut self, peer_id_hex: &str, media: MediaType) -> Result<(), Error> {
+    fn invite(&mut self, peer_id_hex: &PeerIdHex, media: MediaType) -> Result<(), Error> {
         if self.call.is_some() {
             return Err(Error::Busy);
         }
@@ -619,7 +619,7 @@ impl Node {
         self.send_to_live(peer_id_hex, encode_call_invite(media));
         self.call_result = None;
         self.call = Some(CallState::Outgoing {
-            peer_id_hex: peer_id_hex.to_owned(),
+            peer_id_hex: peer_id_hex.clone(),
             media,
             deadline: Instant::now() + INVITE_TIMEOUT,
         });
@@ -627,7 +627,7 @@ impl Node {
     }
 
     /// Accept a pending inbound invite. Opens the mic only after this.
-    pub fn accept_call(&mut self, peer_id_hex: &str) {
+    pub fn accept_call(&mut self, peer_id_hex: &PeerIdHex) {
         let Some(CallState::Incoming {
             peer_id_hex: p,
             media,
@@ -644,7 +644,7 @@ impl Node {
     }
 
     /// Reject a pending inbound invite.
-    pub fn reject_call(&mut self, peer_id_hex: &str) {
+    pub fn reject_call(&mut self, peer_id_hex: &PeerIdHex) {
         if matches!(&self.call, Some(CallState::Incoming { peer_id_hex: p, .. }) if p == peer_id_hex)
         {
             self.send_to_live(peer_id_hex, encode_call_reject());
@@ -664,13 +664,13 @@ impl Node {
     }
 
     /// Queue a frame on the Peer's live session, if any.
-    fn send_to_live(&self, peer_id_hex: &str, frame: Vec<u8>) {
+    fn send_to_live(&self, peer_id_hex: &PeerIdHex, frame: Vec<u8>) {
         if let Some(tx) = self.live.get(peer_id_hex) {
             let _ = tx.send(frame);
         }
     }
 
-    fn handle_file_offer(&mut self, peer_id_hex: &str, name: String, size: u64, hash: [u8; 32]) {
+    fn handle_file_offer(&mut self, peer_id_hex: &PeerIdHex, name: String, size: u64, hash: [u8; 32]) {
         match self
             .trust
             .get(peer_id_hex)
@@ -708,7 +708,7 @@ impl Node {
         }
     }
 
-    fn handle_file_accept(&mut self, peer_id_hex: &str) {
+    fn handle_file_accept(&mut self, peer_id_hex: &PeerIdHex) {
         if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
             if xfer.direction == Direction::Outgoing && xfer.status == TransferStatus::Offered {
                 xfer.status = TransferStatus::Transferring;
@@ -724,7 +724,7 @@ impl Node {
     }
 
     /// Enqueue at most one 64KiB `FileChunk`. The next waits for `SendProgress`.
-    fn enqueue_next_chunk(&mut self, peer_id_hex: &str) {
+    fn enqueue_next_chunk(&mut self, peer_id_hex: &PeerIdHex) {
         let Some(xfer) = self.transfers.get_mut(peer_id_hex) else {
             return;
         };
@@ -741,7 +741,7 @@ impl Node {
         self.send_to_live(peer_id_hex, frame);
     }
 
-    fn handle_send_progress(&mut self, peer_id_hex: &str, transferred: u64) {
+    fn handle_send_progress(&mut self, peer_id_hex: &PeerIdHex, transferred: u64) {
         let enqueue = {
             let Some(xfer) = self.transfers.get_mut(peer_id_hex) else {
                 return;
@@ -764,7 +764,7 @@ impl Node {
         }
     }
 
-    fn handle_file_reject(&mut self, peer_id_hex: &str) {
+    fn handle_file_reject(&mut self, peer_id_hex: &PeerIdHex) {
         if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
             if xfer.direction == Direction::Outgoing {
                 xfer.status = TransferStatus::Rejected;
@@ -772,7 +772,7 @@ impl Node {
         }
     }
 
-    fn handle_file_chunk(&mut self, peer_id_hex: &str, offset: u64, data: &[u8]) {
+    fn handle_file_chunk(&mut self, peer_id_hex: &PeerIdHex, offset: u64, data: &[u8]) {
         let Some(xfer) = self.transfers.get_mut(peer_id_hex) else {
             return;
         };
@@ -792,7 +792,7 @@ impl Node {
     /// Verify the assembled file and write it to the Downloads directory.
     /// SHA-256 mismatch or write failure marks the transfer Failed; a bad
     /// file is never treated as complete.
-    fn finish_incoming_transfer(&mut self, peer_id_hex: &str) {
+    fn finish_incoming_transfer(&mut self, peer_id_hex: &PeerIdHex) {
         let Some(xfer) = self.transfers.get_mut(peer_id_hex) else {
             return;
         };
@@ -812,7 +812,7 @@ impl Node {
         };
     }
 
-    fn handle_disconnect(&mut self, peer_id_hex: &str) {
+    fn handle_disconnect(&mut self, peer_id_hex: &PeerIdHex) {
         self.roster
             .disconnected(peer_id_hex.to_owned(), "Connection lost.".into());
         if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
@@ -832,7 +832,7 @@ impl Node {
         }
     }
 
-    fn handle_call_invite(&mut self, peer_id_hex: &str, media: MediaType) {
+    fn handle_call_invite(&mut self, peer_id_hex: &PeerIdHex, media: MediaType) {
         match self
             .trust
             .get(peer_id_hex)
@@ -856,7 +856,7 @@ impl Node {
         }
     }
 
-    fn handle_call_accept(&mut self, peer_id_hex: &str) {
+    fn handle_call_accept(&mut self, peer_id_hex: &PeerIdHex) {
         let Some(CallState::Outgoing {
             peer_id_hex: p,
             media,
@@ -872,7 +872,7 @@ impl Node {
         self.enter_active(peer_id_hex, media);
     }
 
-    fn handle_call_reject(&mut self, peer_id_hex: &str) {
+    fn handle_call_reject(&mut self, peer_id_hex: &PeerIdHex) {
         if matches!(&self.call, Some(CallState::Outgoing { peer_id_hex: p, .. }) if p == peer_id_hex)
         {
             self.call = None;
@@ -880,7 +880,7 @@ impl Node {
         }
     }
 
-    fn handle_call_end(&mut self, peer_id_hex: &str) {
+    fn handle_call_end(&mut self, peer_id_hex: &PeerIdHex) {
         if self.call.as_ref().is_some_and(|c| c.peer() == peer_id_hex) {
             self.stop_media();
             self.call = None;
@@ -888,7 +888,7 @@ impl Node {
         }
     }
 
-    fn handle_datagram(&mut self, peer_id_hex: &str, bytes: &[u8]) {
+    fn handle_datagram(&mut self, peer_id_hex: &PeerIdHex, bytes: &[u8]) {
         if !matches!(&self.call, Some(CallState::Active { peer_id_hex: p, .. }) if p == peer_id_hex)
         {
             return;
@@ -898,7 +898,7 @@ impl Node {
         }
     }
 
-    fn enter_active(&mut self, peer_id_hex: &str, media: MediaType) {
+    fn enter_active(&mut self, peer_id_hex: &PeerIdHex, media: MediaType) {
         self.stop_media();
         if let Some(tx) = self.dgram_tx.get(peer_id_hex).cloned() {
             let max = self
@@ -949,7 +949,7 @@ impl Node {
     /// # Errors
     ///
     /// See [`NicknameStore::set`].
-    pub fn set_nickname(&mut self, peer_id_hex: &str, nickname: &str) -> Result<(), Error> {
+    pub fn set_nickname(&mut self, peer_id_hex: &PeerIdHex, nickname: &str) -> Result<(), Error> {
         self.nicknames.set(peer_id_hex, nickname)
     }
 
@@ -958,21 +958,21 @@ impl Node {
     /// # Errors
     ///
     /// See [`NicknameStore::remove`].
-    pub fn remove_nickname(&mut self, peer_id_hex: &str) -> Result<(), Error> {
+    pub fn remove_nickname(&mut self, peer_id_hex: &PeerIdHex) -> Result<(), Error> {
         self.nicknames.remove(peer_id_hex)
     }
 
     #[must_use]
-    pub fn display_name(&self, peer_id_hex: &str) -> String {
+    pub fn display_name(&self, peer_id_hex: &PeerIdHex) -> String {
         self.nicknames.display_name(peer_id_hex)
     }
 
     #[must_use]
-    pub fn local_peer_id_hex(&self) -> &str {
+    pub fn local_peer_id_hex(&self) -> &PeerIdHex {
         &self.local_peer_id_hex
     }
 
-    fn attach_session(&mut self, peer_id_hex: String, session: Session, trust: TrustState) {
+    fn attach_session(&mut self, peer_id_hex: PeerIdHex, session: Session, trust: TrustState) {
         self.ensure_history(&peer_id_hex);
         let (tx, rx) = mpsc::unbounded_channel();
         let (dgram_tx, dgram_rx) = mpsc::unbounded_channel();
@@ -990,15 +990,15 @@ impl Node {
         }));
     }
 
-    fn ensure_history(&mut self, peer_id_hex: &str) {
+    fn ensure_history(&mut self, peer_id_hex: &PeerIdHex) {
         if !self.inbox.messages(peer_id_hex).is_empty() {
             return;
         }
-        match self.keys.load(peer_id_hex) {
+        match self.keys.load(peer_id_hex.as_str()) {
             Ok(msgs) => self.inbox.load_peer(peer_id_hex, msgs),
             Err(_) => {
                 self.roster.connect_failed(
-                    peer_id_hex.to_owned(),
+                    peer_id_hex.clone(),
                     "Could not decrypt chat history.".into(),
                 );
             }
@@ -1008,7 +1008,7 @@ impl Node {
     #[cfg(test)]
     pub(crate) fn test_node(dir: &Path, password: &str) -> Result<Self, Error> {
         let identity = crate::unlock_key(dir, password)?;
-        let local_peer_id_hex = to_hex(identity.peer_id().as_bytes());
+        let local_peer_id_hex = PeerIdHex::from_peer_id(&identity.peer_id());
         let nicknames = NicknameStore::load(dir)?;
         let keys = ChatKeys::unlock(dir, password)?;
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -1043,7 +1043,7 @@ impl Node {
 
     /// Peer ID hex of the next queued dial command, if any. Test seam.
     #[cfg(test)]
-    pub(crate) fn next_dial_command(&mut self) -> Option<String> {
+    pub(crate) fn next_dial_command(&mut self) -> Option<PeerIdHex> {
         match self.commands_rx.as_mut()?.try_recv() {
             Ok(Command::Dial(_, hex)) => Some(hex),
             Err(_) => None,
@@ -1051,14 +1051,14 @@ impl Node {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_trust(&mut self, peer_id_hex: &str, state: TrustState) {
-        self.trust.insert(peer_id_hex.to_owned(), state);
+    pub(crate) fn set_trust(&mut self, peer_id_hex: &PeerIdHex, state: TrustState) {
+        self.trust.insert(peer_id_hex.clone(), state);
     }
 
     #[cfg(test)]
     pub(crate) fn attach_byte_sink(
         &mut self,
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         outbound: mpsc::UnboundedSender<Vec<u8>>,
     ) {
         self.ensure_history(&peer_id_hex);
@@ -1069,7 +1069,7 @@ impl Node {
     #[cfg(test)]
     pub(crate) fn attach_dgram_sink(
         &mut self,
-        peer_id_hex: String,
+        peer_id_hex: PeerIdHex,
         outbound: mpsc::UnboundedSender<Vec<u8>>,
         max_datagram: usize,
     ) {
@@ -1087,7 +1087,7 @@ impl Node {
     }
 
     #[cfg(test)]
-    pub(crate) fn push_incoming_bytes(&mut self, peer_id_hex: &str, bytes: &[u8]) {
+    pub(crate) fn push_incoming_bytes(&mut self, peer_id_hex: &PeerIdHex, bytes: &[u8]) {
         let mut rest = bytes;
         while !rest.is_empty() {
             match decode_frame(rest) {
@@ -1100,11 +1100,11 @@ impl Node {
                                 direction: Direction::Incoming,
                                 failed: false,
                             };
-                            let selected = self.roster.selected().map(str::to_owned);
+                            let selected = self.roster.selected().cloned();
                             let _ = self.inbox.received(
                                 peer_id_hex,
                                 msg,
-                                selected.as_deref(),
+                                selected.as_ref(),
                                 Some(&self.keys),
                             );
                         }
@@ -1132,7 +1132,7 @@ impl Node {
     }
 
     #[cfg(test)]
-    pub(crate) fn push_incoming_dgram(&mut self, peer_id_hex: &str, bytes: &[u8]) {
+    pub(crate) fn push_incoming_dgram(&mut self, peer_id_hex: &PeerIdHex, bytes: &[u8]) {
         self.handle_datagram(peer_id_hex, bytes);
     }
 }
@@ -1155,16 +1155,16 @@ fn snapshot(
     nicknames: &NicknameStore,
     roster: &Roster,
     inbox: &Inbox,
-    transfers: &HashMap<String, Transfer>,
-    pending: &HashMap<String, IncomingOffer>,
-    local: &str,
+    transfers: &HashMap<PeerIdHex, Transfer>,
+    pending: &HashMap<PeerIdHex, IncomingOffer>,
+    local: &PeerIdHex,
 ) -> Snapshot {
     let mut seen = BTreeSet::new();
     let mut sidebar = Vec::new();
-    let mut push = |peer: &str| {
-        if seen.insert(peer.to_owned()) {
+    let mut push = |peer: &PeerIdHex| {
+        if seen.insert(peer.clone()) {
             sidebar.push(SidebarItem {
-                peer_id_hex: peer.to_owned(),
+                peer_id_hex: peer.clone(),
                 label: nicknames.display_name(peer),
                 unread: inbox.unread(peer),
             });
@@ -1176,17 +1176,17 @@ fn snapshot(
     for peer in roster.peer_ids() {
         push(peer);
     }
-    let selected = roster.selected().map(ToOwned::to_owned);
-    let selected_status = selected.as_deref().and_then(|peer| roster.status(peer));
+    let selected = roster.selected().cloned();
+    let selected_status = selected.as_ref().and_then(|peer| roster.status(peer));
     let selected_error = selected
-        .as_deref()
+        .as_ref()
         .and_then(|peer| roster.error(peer))
         .cloned();
     let messages = selected
-        .as_deref()
+        .as_ref()
         .map(|peer| inbox.messages(peer).to_vec())
         .unwrap_or_default();
-    let transfer = selected.as_deref().and_then(|peer| {
+    let transfer = selected.as_ref().and_then(|peer| {
         transfers.get(peer).map(|t| FileProgress {
             name: t.name.clone(),
             size: t.size,
@@ -1201,7 +1201,7 @@ fn snapshot(
         size: p.size,
     });
     Snapshot {
-        local_peer_id_hex: local.to_owned(),
+        local_peer_id_hex: local.clone(),
         sidebar,
         selected,
         selected_status,
@@ -1308,7 +1308,7 @@ async fn accept_loop(endpoint: Arc<Endpoint>, events: mpsc::UnboundedSender<Even
     loop {
         match endpoint.accept().await {
             Ok(session) => {
-                let hex = to_hex(session.remote_peer_id().as_bytes());
+                let hex = PeerIdHex::from_peer_id(&session.remote_peer_id());
                 let trust = trust_of(&endpoint, &session.remote_peer_id());
                 if events
                     .send(Event::SessionReady {
@@ -1333,7 +1333,7 @@ fn trust_of(endpoint: &Endpoint, peer: &PeerId) -> TrustState {
 }
 
 async fn session_loop(
-    peer_id_hex: String,
+    peer_id_hex: PeerIdHex,
     mut session: Session,
     mut outbound: mpsc::UnboundedReceiver<Vec<u8>>,
     mut outbound_dgram: mpsc::UnboundedReceiver<Vec<u8>>,
@@ -1389,7 +1389,7 @@ async fn session_loop(
 /// Drain already-buffered datagrams. Session cannot be borrowed by
 /// `recv` and `recv_datagram` in the same `select!`.
 async fn drain_datagrams(
-    peer_id_hex: &str,
+    peer_id_hex: &PeerIdHex,
     session: &Session,
     events: &mpsc::UnboundedSender<IoEvent>,
 ) -> Result<(), ()> {
@@ -1400,7 +1400,7 @@ async fn drain_datagrams(
                 match result {
                     Ok(bytes) => {
                         let _ = events.send(IoEvent::Datagram {
-                            peer_id_hex: peer_id_hex.to_owned(),
+                            peer_id_hex: peer_id_hex.clone(),
                             bytes,
                         });
                     }
@@ -1413,16 +1413,16 @@ async fn drain_datagrams(
 }
 
 /// Sender-side progress: report bytes actually on the wire, not bytes queued.
-fn report_send_progress(peer_id_hex: &str, bytes: &[u8], events: &mpsc::UnboundedSender<IoEvent>) {
+fn report_send_progress(peer_id_hex: &PeerIdHex, bytes: &[u8], events: &mpsc::UnboundedSender<IoEvent>) {
     if let Ok((Decoded::FileChunk { offset, data }, _)) = decode_frame(bytes) {
         let _ = events.send(IoEvent::SendProgress {
-            peer_id_hex: peer_id_hex.to_owned(),
+            peer_id_hex: peer_id_hex.clone(),
             transferred: offset + data.len() as u64,
         });
     }
 }
 
-fn drain_frames(peer_id_hex: &str, buf: &mut Vec<u8>, events: &mpsc::UnboundedSender<IoEvent>) {
+fn drain_frames(peer_id_hex: &PeerIdHex, buf: &mut Vec<u8>, events: &mpsc::UnboundedSender<IoEvent>) {
     while let Ok((decoded, n)) = decode_frame(buf) {
         if let Some(event) = io_event(peer_id_hex, decoded) {
             let _ = events.send(event);
@@ -1431,8 +1431,8 @@ fn drain_frames(peer_id_hex: &str, buf: &mut Vec<u8>, events: &mpsc::UnboundedSe
     }
 }
 
-fn io_event(peer_id_hex: &str, decoded: Decoded) -> Option<IoEvent> {
-    let peer_id_hex = peer_id_hex.to_owned();
+fn io_event(peer_id_hex: &PeerIdHex, decoded: Decoded) -> Option<IoEvent> {
+    let peer_id_hex = peer_id_hex.clone();
     match decoded {
         Decoded::Text { content, timestamp } => Some(IoEvent::Incoming {
             peer_id_hex,
@@ -1476,17 +1476,18 @@ mod tests {
         let mut roster = Roster::new();
         roster.connected(bob.clone());
         let inbox = Inbox::new();
+        let me = valid_peer_hex();
         let snap = snapshot(
             &nicks,
             &roster,
             &inbox,
             &HashMap::new(),
             &HashMap::new(),
-            "me",
+            &me,
         );
         let labels: Vec<_> = snap.sidebar.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"Alice"));
-        assert!(labels.iter().any(|l| *l == short_id(&bob)));
+        assert!(labels.iter().any(|l| *l == short_id(bob.as_str())));
         assert!(!labels.contains(&bob.as_str()));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1499,16 +1500,17 @@ mod tests {
         let mut roster = Roster::new();
         roster.connected(peer.clone());
         let inbox = Inbox::new();
+        let me = valid_peer_hex();
         let snap = snapshot(
             &nicks,
             &roster,
             &inbox,
             &HashMap::new(),
             &HashMap::new(),
-            "me",
+            &me,
         );
         assert_eq!(snap.sidebar.len(), 1);
-        assert_eq!(snap.sidebar[0].label, short_id(&peer));
+        assert_eq!(snap.sidebar[0].label, short_id(peer.as_str()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2124,7 +2126,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn connected_node(dir: &std::path::Path) -> (Node, String, mpsc::UnboundedReceiver<Vec<u8>>) {
+    fn connected_node(dir: &std::path::Path) -> (Node, PeerIdHex, mpsc::UnboundedReceiver<Vec<u8>>) {
         let mut node = Node::test_node(dir, "correct-horse").expect("node");
         let peer = valid_peer_hex();
         let (tx, rx) = mpsc::unbounded_channel();
@@ -2475,7 +2477,7 @@ mod tests {
             peer_id_hex: peer.clone(),
         });
         node.poll();
-        node.dial(&peer).expect("redial");
+        node.dial(peer.as_str()).expect("redial");
         assert_eq!(node.next_dial_command(), Some(peer.clone()));
         assert_eq!(
             node.snapshot().selected_status,
@@ -2502,12 +2504,12 @@ mod tests {
     async fn dial_connected_or_connecting_peer_sends_no_second_command() {
         let dir = temp_path();
         let (mut node, peer, _rx) = connected_node(&dir);
-        node.dial(&peer).expect("connected: switch view only");
+        node.dial(peer.as_str()).expect("connected: switch view only");
         assert!(node.next_dial_command().is_none());
         let other = valid_peer_hex();
-        node.dial(&other).expect("fresh dial");
+        node.dial(other.as_str()).expect("fresh dial");
         assert_eq!(node.next_dial_command(), Some(other.clone()));
-        node.dial(&other).expect("connecting: switch view only");
+        node.dial(other.as_str()).expect("connecting: switch view only");
         assert!(node.next_dial_command().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
