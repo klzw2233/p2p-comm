@@ -237,6 +237,29 @@ struct IncomingOffer {
     hash: [u8; 32],
 }
 
+/// Per-peer runtime state. Connection, transfer, and trust travel together.
+struct PeerState {
+    live: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    transfer: Option<Transfer>,
+    pending: Option<IncomingOffer>,
+    dgram_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    max_dgram: Option<usize>,
+    trust: TrustState,
+}
+
+impl Default for PeerState {
+    fn default() -> Self {
+        Self {
+            live: None,
+            transfer: None,
+            pending: None,
+            dgram_tx: None,
+            max_dgram: None,
+            trust: TrustState::Unknown,
+        }
+    }
+}
+
 const CHUNK: usize = 64 * 1024;
 
 /// Immutable view of the node for the GUI thread.
@@ -262,15 +285,10 @@ pub struct Node {
     roster: Roster,
     inbox: Inbox,
     keys: ChatKeys,
-    live: HashMap<PeerIdHex, mpsc::UnboundedSender<Vec<u8>>>,
-    transfers: HashMap<PeerIdHex, Transfer>,
-    pending: HashMap<PeerIdHex, IncomingOffer>,
-    trust: HashMap<PeerIdHex, TrustState>,
+    peers: HashMap<PeerIdHex, PeerState>,
     download_dir: std::path::PathBuf,
     call: Option<CallState>,
     media: Option<LiveMedia>,
-    dgram_tx: HashMap<PeerIdHex, mpsc::UnboundedSender<Vec<u8>>>,
-    max_dgram: HashMap<PeerIdHex, usize>,
     call_result: Option<(PeerIdHex, CallResult)>,
     workers: Vec<JoinHandle<()>>,
     commands: mpsc::UnboundedSender<Command>,
@@ -325,15 +343,10 @@ impl Node {
             roster: Roster::new(),
             inbox: Inbox::new(),
             keys,
-            live: HashMap::new(),
-            transfers: HashMap::new(),
-            pending: HashMap::new(),
-            trust: HashMap::new(),
+            peers: HashMap::new(),
             download_dir,
             call: None,
             media: None,
-            dgram_tx: HashMap::new(),
-            max_dgram: HashMap::new(),
             call_result: None,
             workers: Vec::new(),
             commands: cmd_tx,
@@ -435,8 +448,7 @@ impl Node {
             &self.nicknames,
             &self.roster,
             &self.inbox,
-            &self.transfers,
-            &self.pending,
+            &self.peers,
             &self.local_peer_id_hex,
         );
         snap.call = self.call.as_ref().map(CallState::view);
@@ -503,7 +515,7 @@ impl Node {
         {
             self.call_result = None;
         }
-        let tx = self.live.get(peer_id_hex).ok_or(Error::NotConnected)?;
+        let tx = self.live_tx(peer_id_hex).cloned().ok_or(Error::NotConnected)?;
         let timestamp = unix_millis();
         let frame = encode_text(content, timestamp);
         let msg = ChatMessage {
@@ -515,7 +527,9 @@ impl Node {
         self.inbox.sent(peer_id_hex, msg, Some(&self.keys))?;
         if tx.send(frame).is_err() {
             self.inbox.mark_last_failed(peer_id_hex);
-            self.live.remove(peer_id_hex);
+            if let Some(peer) = self.peer_mut(peer_id_hex) {
+                peer.live = None;
+            }
         }
         Ok(())
     }
@@ -527,7 +541,7 @@ impl Node {
     /// * [`Error::NotConnected`] if there is no live Session
     /// * [`Error::Io`] if the file cannot be read
     pub fn send_file(&mut self, peer_id_hex: &PeerIdHex, path: &Path) -> Result<(), Error> {
-        let tx = self.live.get(peer_id_hex).ok_or(Error::NotConnected)?;
+        let tx = self.live_tx(peer_id_hex).cloned().ok_or(Error::NotConnected)?;
         let bytes = std::fs::read(path).map_err(|_| Error::Io)?;
         let size = u64::try_from(bytes.len()).map_err(|_| Error::Io)?;
         let hash = sha256(&bytes);
@@ -538,55 +552,52 @@ impl Node {
             .to_owned();
         let frame = encode_file_offer(&name, size, hash);
         if tx.send(frame).is_err() {
-            self.live.remove(peer_id_hex);
+            if let Some(peer) = self.peer_mut(peer_id_hex) {
+                peer.live = None;
+            }
             return Err(Error::NotConnected);
         }
-        self.transfers.insert(
-            peer_id_hex.clone(),
-            Transfer {
-                name,
-                size,
-                transferred: 0,
-                direction: Direction::Outgoing,
-                status: TransferStatus::Offered,
-                hash,
-                bytes,
-                buffer: Vec::new(),
-                next_offset: 0,
-            },
-        );
+        self.ensure_peer(peer_id_hex).transfer = Some(Transfer {
+            name,
+            size,
+            transferred: 0,
+            direction: Direction::Outgoing,
+            status: TransferStatus::Offered,
+            hash,
+            bytes,
+            buffer: Vec::new(),
+            next_offset: 0,
+        });
         Ok(())
     }
 
     /// Accept a pending TOFU file offer.
     pub fn accept_file(&mut self, peer_id_hex: &PeerIdHex) {
-        if let Some(offer) = self.pending.remove(peer_id_hex) {
-            self.send_to_live(peer_id_hex, encode_file_accept());
-            let size = offer.size;
-            self.transfers.insert(
-                peer_id_hex.clone(),
-                Transfer {
-                    name: offer.name,
-                    size,
-                    transferred: 0,
-                    direction: Direction::Incoming,
-                    status: TransferStatus::Transferring,
-                    hash: offer.hash,
-                    bytes: Vec::new(),
-                    buffer: Vec::new(),
-                    next_offset: 0,
-                },
-            );
-            if size == 0 {
-                // Zero-byte file: no chunks will ever arrive.
-                self.finish_incoming_transfer(peer_id_hex);
-            }
+        let Some(offer) = self.ensure_peer(peer_id_hex).pending.take() else {
+            return;
+        };
+        self.send_to_live(peer_id_hex, encode_file_accept());
+        let size = offer.size;
+        self.ensure_peer(peer_id_hex).transfer = Some(Transfer {
+            name: offer.name,
+            size,
+            transferred: 0,
+            direction: Direction::Incoming,
+            status: TransferStatus::Transferring,
+            hash: offer.hash,
+            bytes: Vec::new(),
+            buffer: Vec::new(),
+            next_offset: 0,
+        });
+        if size == 0 {
+            // Zero-byte file: no chunks will ever arrive.
+            self.finish_incoming_transfer(peer_id_hex);
         }
     }
 
     /// Reject a pending TOFU file offer.
     pub fn reject_file(&mut self, peer_id_hex: &PeerIdHex) {
-        if self.pending.remove(peer_id_hex).is_some() {
+        if self.peer_mut(peer_id_hex).and_then(|p| p.pending.take()).is_some() {
             self.send_to_live(peer_id_hex, encode_file_reject());
         }
     }
@@ -615,7 +626,7 @@ impl Node {
         if self.call.is_some() {
             return Err(Error::Busy);
         }
-        let _ = self.live.get(peer_id_hex).ok_or(Error::NotConnected)?;
+        let _ = self.live_tx(peer_id_hex).ok_or(Error::NotConnected)?;
         self.send_to_live(peer_id_hex, encode_call_invite(media));
         self.call_result = None;
         self.call = Some(CallState::Outgoing {
@@ -665,34 +676,46 @@ impl Node {
 
     /// Queue a frame on the Peer's live session, if any.
     fn send_to_live(&self, peer_id_hex: &PeerIdHex, frame: Vec<u8>) {
-        if let Some(tx) = self.live.get(peer_id_hex) {
+        if let Some(tx) = self.live_tx(peer_id_hex) {
             let _ = tx.send(frame);
         }
     }
 
+    fn peer(&self, peer_id_hex: &PeerIdHex) -> Option<&PeerState> {
+        self.peers.get(peer_id_hex)
+    }
+
+    fn peer_mut(&mut self, peer_id_hex: &PeerIdHex) -> Option<&mut PeerState> {
+        self.peers.get_mut(peer_id_hex)
+    }
+
+    fn ensure_peer(&mut self, peer_id_hex: &PeerIdHex) -> &mut PeerState {
+        self.peers.entry(peer_id_hex.clone()).or_default()
+    }
+
+    fn live_tx(&self, peer_id_hex: &PeerIdHex) -> Option<&mpsc::UnboundedSender<Vec<u8>>> {
+        self.peer(peer_id_hex).and_then(|p| p.live.as_ref())
+    }
+
+    fn transfer_mut(&mut self, peer_id_hex: &PeerIdHex) -> Option<&mut Transfer> {
+        self.peer_mut(peer_id_hex).and_then(|p| p.transfer.as_mut())
+    }
+
     fn handle_file_offer(&mut self, peer_id_hex: &PeerIdHex, name: String, size: u64, hash: [u8; 32]) {
-        match self
-            .trust
-            .get(peer_id_hex)
-            .copied()
-            .unwrap_or(TrustState::Unknown)
-        {
+        match self.peer(peer_id_hex).map_or(TrustState::Unknown, |p| p.trust) {
             TrustState::Verified => {
                 self.send_to_live(peer_id_hex, encode_file_accept());
-                self.transfers.insert(
-                    peer_id_hex.to_owned(),
-                    Transfer {
-                        name,
-                        size,
-                        transferred: 0,
-                        direction: Direction::Incoming,
-                        status: TransferStatus::Transferring,
-                        hash,
-                        bytes: Vec::new(),
-                        buffer: Vec::new(),
-                        next_offset: 0,
-                    },
-                );
+                self.ensure_peer(peer_id_hex).transfer = Some(Transfer {
+                    name,
+                    size,
+                    transferred: 0,
+                    direction: Direction::Incoming,
+                    status: TransferStatus::Transferring,
+                    hash,
+                    bytes: Vec::new(),
+                    buffer: Vec::new(),
+                    next_offset: 0,
+                });
                 if size == 0 {
                     // Zero-byte file: no chunks will ever arrive.
                     self.finish_incoming_transfer(peer_id_hex);
@@ -702,30 +725,30 @@ impl Node {
                 self.send_to_live(peer_id_hex, encode_file_reject());
             }
             TrustState::Tofu => {
-                self.pending
-                    .insert(peer_id_hex.to_owned(), IncomingOffer { name, size, hash });
+                self.ensure_peer(peer_id_hex).pending = Some(IncomingOffer { name, size, hash });
             }
         }
     }
 
     fn handle_file_accept(&mut self, peer_id_hex: &PeerIdHex) {
-        if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
-            if xfer.direction == Direction::Outgoing && xfer.status == TransferStatus::Offered {
-                xfer.status = TransferStatus::Transferring;
-                if xfer.bytes.is_empty() {
-                    // Zero-byte file: nothing to queue, nothing on the wire.
-                    xfer.status = TransferStatus::Complete;
-                    return;
-                }
-                xfer.next_offset = 0;
-                self.enqueue_next_chunk(peer_id_hex);
+        let Some(xfer) = self.transfer_mut(peer_id_hex) else {
+            return;
+        };
+        if xfer.direction == Direction::Outgoing && xfer.status == TransferStatus::Offered {
+            xfer.status = TransferStatus::Transferring;
+            if xfer.bytes.is_empty() {
+                // Zero-byte file: nothing to queue, nothing on the wire.
+                xfer.status = TransferStatus::Complete;
+                return;
             }
+            xfer.next_offset = 0;
+            self.enqueue_next_chunk(peer_id_hex);
         }
     }
 
     /// Enqueue at most one 64KiB `FileChunk`. The next waits for `SendProgress`.
     fn enqueue_next_chunk(&mut self, peer_id_hex: &PeerIdHex) {
-        let Some(xfer) = self.transfers.get_mut(peer_id_hex) else {
+        let Some(xfer) = self.transfer_mut(peer_id_hex) else {
             return;
         };
         if xfer.direction != Direction::Outgoing || xfer.status != TransferStatus::Transferring {
@@ -743,11 +766,10 @@ impl Node {
 
     fn handle_send_progress(&mut self, peer_id_hex: &PeerIdHex, transferred: u64) {
         let enqueue = {
-            let Some(xfer) = self.transfers.get_mut(peer_id_hex) else {
+            let Some(xfer) = self.transfer_mut(peer_id_hex) else {
                 return;
             };
-            if xfer.direction != Direction::Outgoing || xfer.status != TransferStatus::Transferring
-            {
+            if xfer.direction != Direction::Outgoing || xfer.status != TransferStatus::Transferring {
                 return;
             }
             xfer.transferred = transferred;
@@ -765,7 +787,7 @@ impl Node {
     }
 
     fn handle_file_reject(&mut self, peer_id_hex: &PeerIdHex) {
-        if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
+        if let Some(xfer) = self.transfer_mut(peer_id_hex) {
             if xfer.direction == Direction::Outgoing {
                 xfer.status = TransferStatus::Rejected;
             }
@@ -773,7 +795,7 @@ impl Node {
     }
 
     fn handle_file_chunk(&mut self, peer_id_hex: &PeerIdHex, offset: u64, data: &[u8]) {
-        let Some(xfer) = self.transfers.get_mut(peer_id_hex) else {
+        let Some(xfer) = self.transfer_mut(peer_id_hex) else {
             return;
         };
         if xfer.direction != Direction::Incoming || xfer.status != TransferStatus::Transferring {
@@ -793,7 +815,8 @@ impl Node {
     /// SHA-256 mismatch or write failure marks the transfer Failed; a bad
     /// file is never treated as complete.
     fn finish_incoming_transfer(&mut self, peer_id_hex: &PeerIdHex) {
-        let Some(xfer) = self.transfers.get_mut(peer_id_hex) else {
+        let download_dir = self.download_dir.clone();
+        let Some(xfer) = self.transfer_mut(peer_id_hex) else {
             return;
         };
         if xfer.direction != Direction::Incoming || xfer.status != TransferStatus::Transferring {
@@ -801,7 +824,7 @@ impl Node {
         }
         let ok = sha256(&xfer.buffer) == xfer.hash
             && std::fs::write(
-                unique_download_path(&self.download_dir, safe_filename(&xfer.name)),
+                unique_download_path(&download_dir, safe_filename(&xfer.name)),
                 &xfer.buffer,
             )
             .is_ok();
@@ -815,17 +838,19 @@ impl Node {
     fn handle_disconnect(&mut self, peer_id_hex: &PeerIdHex) {
         self.roster
             .disconnected(peer_id_hex.to_owned(), "Connection lost.".into());
-        if let Some(xfer) = self.transfers.get_mut(peer_id_hex) {
-            if xfer.status == TransferStatus::Offered || xfer.status == TransferStatus::Transferring
-            {
-                xfer.status = TransferStatus::Failed;
+        if let Some(peer) = self.peer_mut(peer_id_hex) {
+            if let Some(xfer) = peer.transfer.as_mut() {
+                if xfer.status == TransferStatus::Offered || xfer.status == TransferStatus::Transferring
+                {
+                    xfer.status = TransferStatus::Failed;
+                }
             }
+            // An unanswered offer dies with the session; no resume in v1.
+            peer.pending = None;
+            peer.live = None;
+            peer.dgram_tx = None;
+            peer.max_dgram = None;
         }
-        // An unanswered offer dies with the session; no resume in v1.
-        self.pending.remove(peer_id_hex);
-        self.live.remove(peer_id_hex);
-        self.dgram_tx.remove(peer_id_hex);
-        self.max_dgram.remove(peer_id_hex);
         if self.call.as_ref().is_some_and(|c| c.peer() == peer_id_hex) {
             self.stop_media();
             self.call = None;
@@ -833,12 +858,7 @@ impl Node {
     }
 
     fn handle_call_invite(&mut self, peer_id_hex: &PeerIdHex, media: MediaType) {
-        match self
-            .trust
-            .get(peer_id_hex)
-            .copied()
-            .unwrap_or(TrustState::Unknown)
-        {
+        match self.peer(peer_id_hex).map_or(TrustState::Unknown, |p| p.trust) {
             TrustState::Unknown => {
                 self.send_to_live(peer_id_hex, encode_call_reject());
             }
@@ -900,13 +920,11 @@ impl Node {
 
     fn enter_active(&mut self, peer_id_hex: &PeerIdHex, media: MediaType) {
         self.stop_media();
-        if let Some(tx) = self.dgram_tx.get(peer_id_hex).cloned() {
-            let max = self
-                .max_dgram
-                .get(peer_id_hex)
-                .copied()
-                .unwrap_or(DEFAULT_MAX_DATAGRAM);
-            self.media = LiveMedia::start(tx, media, max_nal_len(max));
+        if let Some(peer) = self.peer(peer_id_hex) {
+            if let Some(tx) = peer.dgram_tx.clone() {
+                let max = peer.max_dgram.unwrap_or(DEFAULT_MAX_DATAGRAM);
+                self.media = LiveMedia::start(tx, media, max_nal_len(max));
+            }
         }
         self.call = Some(CallState::Active {
             peer_id_hex: peer_id_hex.to_owned(),
@@ -976,14 +994,14 @@ impl Node {
         self.ensure_history(&peer_id_hex);
         let (tx, rx) = mpsc::unbounded_channel();
         let (dgram_tx, dgram_rx) = mpsc::unbounded_channel();
-        self.live.insert(peer_id_hex.clone(), tx);
-        self.dgram_tx.insert(peer_id_hex.clone(), dgram_tx);
-        self.max_dgram.insert(
-            peer_id_hex.clone(),
-            session.max_datagram_size().unwrap_or(DEFAULT_MAX_DATAGRAM),
-        );
+        {
+            let peer = self.ensure_peer(&peer_id_hex);
+            peer.live = Some(tx);
+            peer.dgram_tx = Some(dgram_tx);
+            peer.max_dgram = Some(session.max_datagram_size().unwrap_or(DEFAULT_MAX_DATAGRAM));
+            peer.trust = trust;
+        }
         self.roster.connected(peer_id_hex.clone());
-        self.trust.insert(peer_id_hex.clone(), trust);
         let io_tx = self.io_tx.clone();
         self.workers.push(tokio::spawn(async move {
             session_loop(peer_id_hex, session, rx, dgram_rx, io_tx).await;
@@ -1020,15 +1038,10 @@ impl Node {
             roster: Roster::new(),
             inbox: Inbox::new(),
             keys,
-            live: HashMap::new(),
-            transfers: HashMap::new(),
-            pending: HashMap::new(),
-            trust: HashMap::new(),
+            peers: HashMap::new(),
             download_dir: dir.to_path_buf(),
             call: None,
             media: None,
-            dgram_tx: HashMap::new(),
-            max_dgram: HashMap::new(),
             call_result: None,
             workers: Vec::new(),
             commands: cmd_tx,
@@ -1039,6 +1052,12 @@ impl Node {
             accept: tokio::spawn(async {}),
             dialer: tokio::spawn(async {}),
         })
+    }
+
+    /// Peer on the in-flight call, if any. Test seam: hides `CallView` internals.
+    #[cfg(test)]
+    pub(crate) fn call_peer(&self) -> Option<&PeerIdHex> {
+        self.call.as_ref().map(CallState::peer)
     }
 
     /// Peer ID hex of the next queued dial command, if any. Test seam.
@@ -1052,7 +1071,7 @@ impl Node {
 
     #[cfg(test)]
     pub(crate) fn set_trust(&mut self, peer_id_hex: &PeerIdHex, state: TrustState) {
-        self.trust.insert(peer_id_hex.clone(), state);
+        self.ensure_peer(peer_id_hex).trust = state;
     }
 
     #[cfg(test)]
@@ -1062,19 +1081,20 @@ impl Node {
         outbound: mpsc::UnboundedSender<Vec<u8>>,
     ) {
         self.ensure_history(&peer_id_hex);
-        self.live.insert(peer_id_hex.clone(), outbound);
+        self.ensure_peer(&peer_id_hex).live = Some(outbound);
         self.roster.connected(peer_id_hex);
     }
 
     #[cfg(test)]
     pub(crate) fn attach_dgram_sink(
         &mut self,
-        peer_id_hex: PeerIdHex,
+        peer_id_hex: &PeerIdHex,
         outbound: mpsc::UnboundedSender<Vec<u8>>,
         max_datagram: usize,
     ) {
-        self.dgram_tx.insert(peer_id_hex.clone(), outbound);
-        self.max_dgram.insert(peer_id_hex, max_datagram);
+        let peer = self.ensure_peer(peer_id_hex);
+        peer.dgram_tx = Some(outbound);
+        peer.max_dgram = Some(max_datagram);
     }
 
     #[cfg(test)]
@@ -1144,9 +1164,7 @@ impl Drop for Node {
         for w in &self.workers {
             w.abort();
         }
-        self.live.clear();
-        self.dgram_tx.clear();
-        self.max_dgram.clear();
+        self.peers.clear();
         self.stop_media();
     }
 }
@@ -1155,8 +1173,7 @@ fn snapshot(
     nicknames: &NicknameStore,
     roster: &Roster,
     inbox: &Inbox,
-    transfers: &HashMap<PeerIdHex, Transfer>,
-    pending: &HashMap<PeerIdHex, IncomingOffer>,
+    peers: &HashMap<PeerIdHex, PeerState>,
     local: &PeerIdHex,
 ) -> Snapshot {
     let mut seen = BTreeSet::new();
@@ -1187,7 +1204,7 @@ fn snapshot(
         .map(|peer| inbox.messages(peer).to_vec())
         .unwrap_or_default();
     let transfer = selected.as_ref().and_then(|peer| {
-        transfers.get(peer).map(|t| FileProgress {
+        peers.get(peer).and_then(|ps| ps.transfer.as_ref()).map(|t| FileProgress {
             name: t.name.clone(),
             size: t.size,
             transferred: t.transferred,
@@ -1195,10 +1212,12 @@ fn snapshot(
             status: t.status,
         })
     });
-    let pending_offer = pending.iter().next().map(|(peer, p)| PendingOffer {
-        peer_id_hex: peer.clone(),
-        name: p.name.clone(),
-        size: p.size,
+    let pending_offer = peers.iter().find_map(|(peer, ps)| {
+        ps.pending.as_ref().map(|p| PendingOffer {
+            peer_id_hex: peer.clone(),
+            name: p.name.clone(),
+            size: p.size,
+        })
     });
     Snapshot {
         local_peer_id_hex: local.clone(),
@@ -1477,14 +1496,7 @@ mod tests {
         roster.connected(bob.clone());
         let inbox = Inbox::new();
         let me = valid_peer_hex();
-        let snap = snapshot(
-            &nicks,
-            &roster,
-            &inbox,
-            &HashMap::new(),
-            &HashMap::new(),
-            &me,
-        );
+        let snap = snapshot(&nicks, &roster, &inbox, &HashMap::new(), &me);
         let labels: Vec<_> = snap.sidebar.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"Alice"));
         assert!(labels.iter().any(|l| *l == short_id(bob.as_str())));
@@ -1501,14 +1513,7 @@ mod tests {
         roster.connected(peer.clone());
         let inbox = Inbox::new();
         let me = valid_peer_hex();
-        let snap = snapshot(
-            &nicks,
-            &roster,
-            &inbox,
-            &HashMap::new(),
-            &HashMap::new(),
-            &me,
-        );
+        let snap = snapshot(&nicks, &roster, &inbox, &HashMap::new(), &me);
         assert_eq!(snap.sidebar.len(), 1);
         assert_eq!(snap.sidebar[0].label, short_id(peer.as_str()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2149,8 +2154,8 @@ mod tests {
             }
         );
         let snap = node.snapshot();
+        assert_eq!(node.call_peer(), Some(&peer));
         let call = snap.call.expect("outgoing");
-        assert_eq!(call.peer_id_hex, peer);
         assert_eq!(call.phase, CallPhase::Outgoing);
         assert_eq!(call.media, MediaType::Audio);
         let _ = std::fs::remove_dir_all(&dir);
@@ -2241,7 +2246,7 @@ mod tests {
         node.push_incoming_bytes(&other, &encode_call_invite(MediaType::Audio));
         let frame = other_rx.try_recv().expect("reject");
         assert_eq!(decode_frame(&frame).expect("decode").0, Decoded::CallReject);
-        assert_eq!(node.snapshot().call.expect("still first").peer_id_hex, peer);
+        assert_eq!(node.call_peer(), Some(&peer));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2315,8 +2320,8 @@ mod tests {
             }
         );
         let snap = node.snapshot();
+        assert_eq!(node.call_peer(), Some(&peer));
         let call = snap.call.expect("outgoing");
-        assert_eq!(call.peer_id_hex, peer);
         assert_eq!(call.phase, CallPhase::Outgoing);
         assert_eq!(call.media, MediaType::AudioVideo);
         let _ = std::fs::remove_dir_all(&dir);
@@ -2388,7 +2393,7 @@ mod tests {
         node.push_incoming_bytes(&other, &encode_call_invite(MediaType::AudioVideo));
         let frame = other_rx.try_recv().expect("reject");
         assert_eq!(decode_frame(&frame).expect("decode").0, Decoded::CallReject);
-        assert_eq!(node.snapshot().call.expect("still first").peer_id_hex, peer);
+        assert_eq!(node.call_peer(), Some(&peer));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2411,7 +2416,7 @@ mod tests {
         let dir = temp_path();
         let (mut node, peer, mut rx) = connected_node(&dir);
         let (dtx, _drx) = mpsc::unbounded_channel();
-        node.attach_dgram_sink(peer.clone(), dtx, DEFAULT_MAX_DATAGRAM);
+        node.attach_dgram_sink(&peer, dtx, DEFAULT_MAX_DATAGRAM);
         node.set_trust(&peer, TrustState::Verified);
         node.push_incoming_bytes(&peer, &encode_call_invite(MediaType::AudioVideo));
         node.accept_call(&peer);
@@ -2595,10 +2600,7 @@ mod tests {
         let (tx, _other_rx) = mpsc::unbounded_channel();
         node.attach_byte_sink(other.clone(), tx);
         node.select(&other);
-        assert_eq!(
-            node.snapshot().call.expect("still active").peer_id_hex,
-            peer
-        );
+        assert_eq!(node.call_peer(), Some(&peer));
         node.hangup();
         let frame = rx.try_recv().expect("end");
         assert_eq!(decode_frame(&frame).expect("decode").0, Decoded::CallEnd);
