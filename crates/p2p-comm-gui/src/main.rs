@@ -2,7 +2,7 @@ use eframe::egui;
 
 use p2p_comm_core::{
     default_data_dir, has_stored_identity, short_id, CallPhase, CallResult, Error, FileProgress,
-    MediaType, Node, PeerStatus, PendingInvite, PendingOffer, Snapshot, TransferStatus, VideoFrame,
+    MediaType, Node, PeerIdHex, PeerStatus, PendingInvite, PendingOffer, Snapshot, TransferStatus, VideoFrame,
 };
 
 fn main() -> eframe::Result {
@@ -209,7 +209,7 @@ fn sidebar_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
     let mut set_nick = None;
     let mut del_nick = None;
     for item in &snap.sidebar {
-        let selected = snap.selected.as_deref() == Some(item.peer_id_hex.as_str());
+        let selected = snap.selected.as_ref() == Some(&item.peer_id_hex);
         let label = if item.unread > 0 {
             format!("{} ({})", item.label, item.unread)
         } else {
@@ -233,7 +233,7 @@ fn sidebar_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
     if let Some(peer) = select {
         main.node.select(&peer);
         main.nickname_draft = main.node.display_name(&peer);
-        if main.nickname_draft == short_id(&peer) {
+        if main.nickname_draft == short_id(peer.as_str()) {
             main.nickname_draft.clear();
         }
         main.nickname_error = None;
@@ -241,7 +241,7 @@ fn sidebar_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
     if let Some(peer) = set_nick {
         main.node.select(&peer);
         main.nickname_draft = main.node.display_name(&peer);
-        if main.nickname_draft == short_id(&peer) {
+        if main.nickname_draft == short_id(peer.as_str()) {
             main.nickname_draft.clear();
         }
         main.nickname_error = None;
@@ -278,7 +278,7 @@ fn chat_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
     ui.heading("Chat");
     ui.label(format!("Your Peer ID: {}", snap.local_peer_id_hex));
     ui.separator();
-    let Some(peer) = snap.selected.as_deref() else {
+    let Some(peer) = snap.selected.as_ref() else {
         ui.label("Select a conversation from the sidebar.");
         return;
     };
@@ -312,7 +312,7 @@ fn chat_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
     if let Some(err) = &snap.selected_error {
         ui.colored_label(egui::Color32::from_rgb(200, 80, 80), &err.message);
         if ui.button("Retry").clicked() {
-            if let Err(dial_err) = main.node.dial(peer) {
+            if let Err(dial_err) = main.node.dial(peer.as_str()) {
                 main.dial_error = Some(error_text(dial_err).to_owned());
             }
         }
@@ -414,11 +414,11 @@ fn offer_window(ctx: &egui::Context, main: &mut MainState, offer: &PendingOffer)
         });
 }
 
-fn video_pane(ui: &mut egui::Ui, main: &MainState, snap: &Snapshot, peer: &str) {
+fn video_pane(ui: &mut egui::Ui, main: &MainState, snap: &Snapshot, peer: &PeerIdHex) {
     let Some(call) = snap.call.as_ref() else {
         return;
     };
-    if call.peer_id_hex != peer
+    if &call.peer_id_hex != peer
         || call.media != MediaType::AudioVideo
         || call.phase != CallPhase::Active
     {
@@ -445,9 +445,9 @@ fn apply_video_frame(ctx: &egui::Context, main: &mut MainState, frame: &VideoFra
     }
 }
 
-fn call_bar(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot, peer: &str) {
+fn call_bar(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot, peer: &PeerIdHex) {
     ui.horizontal(|ui| match snap.call.as_ref() {
-        Some(call) if call.peer_id_hex == peer => {
+        Some(call) if &call.peer_id_hex == peer => {
             let label = match (call.phase, call.media) {
                 (CallPhase::Outgoing, MediaType::AudioVideo) => "Calling (video)…",
                 (CallPhase::Outgoing, MediaType::Audio) => "Calling…",
