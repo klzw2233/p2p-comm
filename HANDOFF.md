@@ -2,7 +2,12 @@
 
 ## 项目状态
 
-**当前阶段**: 文字 + 文件 + 语音 + 视频已合入 main（PR #18 / issue #8）。已连接 Peer 可互发文字、文件（TOFU）、语音和视频；记录按 Peer 加密 JSONL 落盘。v1 功能做完，剩朋友异机验收。
+**当前阶段**: v1 功能已完成（文字 + 文件 + 语音 + 视频 + 审查修补票 #19–#25），剩朋友异机验收。
+
+**最新动态** (2026-09-10):
+- 全项目 code review 完成（Standards + Spec 两轴）
+- 架构文档与模块设计文档生成: [docs/architecture.md](./docs/architecture.md) / [docs/module-design.md](./docs/module-design.md)
+- 发现 3 处测试覆盖缺失 + 4 处代码气味，已开 issue #33 (Spec 修复) 和 #34 (架构改进)
 
 栈评估（2026-09-06）: [notes/2026-09-06-stack-architecture-review.md](./notes/2026-09-06-stack-architecture-review.md)
 
@@ -26,12 +31,17 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 
 ## 架构要点
 
+详见 [docs/architecture.md](./docs/architecture.md) 和 [docs/module-design.md](./docs/module-design.md)。
+
+**核心原则**:
 - **workspace 两 crate**: `p2p-comm-core`（无头核心）+ `p2p-comm-gui`（eframe 0.30 前端）
 - **P2PCore 依赖**: git 依赖 `main`（数据报 API 已合入；`RelayConfig::n0_public()` 显式 opt-in）
 - **平台**: Linux + Windows 10，CI 矩阵覆盖两平台编译
 - **数据目录**: 自动使用平台标准位置（`dirs` crate 6.x）
 - **身份密码**: 启动弹窗输入，v1 不做钥匙串。封装走 P2PCore `FileKeyStore`（Argon2id + ChaCha20-Poly1305）
 - **多会话**: 侧边栏昵称列表，可同时和多个 Peer 聊天
+
+**测试 seam**: Node 公开 API + 假 Session（test_node + 字节 sink）
 
 ## 已锁定决定（ADR）
 
@@ -60,8 +70,12 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 2. ~~开第一张 spec issue~~ issue #1
 3. ~~搭建 CI~~ `.github/workflows/ci.yml`
 4. ~~按 issue #1 实现（顺序：身份解锁 → 拨号/侧边栏 → 存储/文字 → 文件 → 语音 → 视频）~~
-5. 朋友异机验收
-6. macOS：#1 完成后再开独立 spec（ADR-0001）
+5. ~~v1 审查修补~~ issue #19 (已关：#20–#25)
+6. ~~全项目 code review~~ 完成 (2026-09-10)
+7. **Spec 修复**: issue #33 (补充测试覆盖与映射确认)
+8. **(可选) 架构改进**: issue #34 (消除 Primitive Obsession 与 Data Clumps)
+9. 朋友异机验收
+10. macOS：#1 完成后再开独立 spec（ADR-0001）
 
 ## 已知约束
 
