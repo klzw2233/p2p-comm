@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 
 use p2p_trust::PeerId;
 
-use crate::{parse_peer_id_hex, Error};
+use crate::{parse_peer_id_hex, PeerIdHex, Error};
 
 const FILE_NAME: &str = "nicknames.json";
 
 /// Local-only nickname table. Never sent on the wire.
 pub struct NicknameStore {
     path: PathBuf,
-    by_peer: BTreeMap<String, String>,
+    by_peer: BTreeMap<PeerIdHex, String>,
 }
 
 impl NicknameStore {
@@ -34,30 +34,30 @@ impl NicknameStore {
 
     /// Nickname for `peer_id_hex`, if any.
     #[must_use]
-    pub fn get(&self, peer_id_hex: &str) -> Option<&str> {
+    pub fn get(&self, peer_id_hex: &PeerIdHex) -> Option<&str> {
         self.by_peer.get(peer_id_hex).map(String::as_str)
     }
 
     /// Nickname if set, otherwise the first 8 hex characters of the Peer ID.
     #[must_use]
-    pub fn display_name(&self, peer_id_hex: &str) -> String {
+    pub fn display_name(&self, peer_id_hex: &PeerIdHex) -> String {
         self.get(peer_id_hex)
-            .map_or_else(|| short_id(peer_id_hex), ToOwned::to_owned)
+            .map_or_else(|| short_id(peer_id_hex.as_str()), ToOwned::to_owned)
     }
 
     /// Reverse lookup: nickname → 64-char hex Peer ID.
     #[must_use]
-    pub fn peer_id_hex_for_nickname(&self, nickname: &str) -> Option<&str> {
+    pub fn peer_id_hex_for_nickname(&self, nickname: &str) -> Option<&PeerIdHex> {
         self.by_peer
             .iter()
-            .find_map(|(peer, name)| (name == nickname).then_some(peer.as_str()))
+            .find_map(|(peer, name)| (name == nickname).then_some(peer))
     }
 
     /// Iterate `(peer_id_hex, nickname)` in Peer ID order.
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&PeerIdHex, &str)> {
         self.by_peer
             .iter()
-            .map(|(peer, name)| (peer.as_str(), name.as_str()))
+            .map(|(peer, name)| (peer, name.as_str()))
     }
 
     /// Set or replace the nickname for `peer_id_hex`. Writes immediately.
@@ -68,8 +68,7 @@ impl NicknameStore {
     /// * [`Error::EmptyNickname`] if `nickname` is empty
     /// * [`Error::DuplicateNickname`] if another Peer already has this nickname
     /// * [`Error::Io`] if the file cannot be written
-    pub fn set(&mut self, peer_id_hex: &str, nickname: &str) -> Result<(), Error> {
-        let (_, hex) = parse_peer_id_hex(peer_id_hex)?;
+    pub fn set(&mut self, peer_id_hex: &PeerIdHex, nickname: &str) -> Result<(), Error> {
         let nickname = nickname.trim();
         if nickname.is_empty() {
             return Err(Error::EmptyNickname);
@@ -77,11 +76,11 @@ impl NicknameStore {
         if self
             .by_peer
             .iter()
-            .any(|(peer, name)| peer != &hex && name == nickname)
+            .any(|(peer, name)| peer != peer_id_hex && name == nickname)
         {
             return Err(Error::DuplicateNickname);
         }
-        self.by_peer.insert(hex, nickname.to_owned());
+        self.by_peer.insert(peer_id_hex.clone(), nickname.to_owned());
         self.persist()
     }
 
@@ -90,7 +89,7 @@ impl NicknameStore {
     /// # Errors
     ///
     /// * [`Error::Io`] if the file cannot be written
-    pub fn remove(&mut self, peer_id_hex: &str) -> Result<(), Error> {
+    pub fn remove(&mut self, peer_id_hex: &PeerIdHex) -> Result<(), Error> {
         self.by_peer.remove(peer_id_hex);
         self.persist()
     }
@@ -102,7 +101,7 @@ impl NicknameStore {
 ///
 /// * [`Error::InvalidPeerId`] if the input looks like hex but is not a valid Peer ID
 /// * [`Error::UnknownNickname`] if it is not hex and not a stored nickname
-pub fn resolve_dial(store: &NicknameStore, input: &str) -> Result<(PeerId, String), Error> {
+pub fn resolve_dial(store: &NicknameStore, input: &str) -> Result<(PeerId, PeerIdHex), Error> {
     let input = input.trim();
     if input.is_empty() {
         return Err(Error::InvalidPeerId);
@@ -113,7 +112,7 @@ pub fn resolve_dial(store: &NicknameStore, input: &str) -> Result<(PeerId, Strin
     store
         .peer_id_hex_for_nickname(input)
         .ok_or(Error::UnknownNickname)
-        .and_then(parse_peer_id_hex)
+        .and_then(|hex| parse_peer_id_hex(hex.as_str()))
 }
 
 #[must_use]
@@ -121,7 +120,7 @@ pub fn short_id(peer_id_hex: &str) -> String {
     peer_id_hex.chars().take(8).collect()
 }
 
-fn parse_file(bytes: &[u8]) -> Result<BTreeMap<String, String>, Error> {
+fn parse_file(bytes: &[u8]) -> Result<BTreeMap<PeerIdHex, String>, Error> {
     let raw: BTreeMap<String, String> =
         serde_json::from_slice(bytes).map_err(|_| Error::CorruptStore)?;
     let mut by_peer = BTreeMap::new();
@@ -135,11 +134,16 @@ fn parse_file(bytes: &[u8]) -> Result<BTreeMap<String, String>, Error> {
     Ok(by_peer)
 }
 
-fn persist_map(path: &Path, by_peer: &BTreeMap<String, String>) -> Result<(), Error> {
+fn persist_map(path: &Path, by_peer: &BTreeMap<PeerIdHex, String>) -> Result<(), Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|_| Error::Io)?;
     }
-    let json = serde_json::to_vec_pretty(by_peer).map_err(|_| Error::Io)?;
+    // Serialize PeerIdHex keys as strings
+    let string_map: BTreeMap<String, String> = by_peer
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect();
+    let json = serde_json::to_vec_pretty(&string_map).map_err(|_| Error::Io)?;
     let tmp = path.with_extension("json.tmp");
     {
         let mut file = fs::File::create(&tmp).map_err(|_| Error::Io)?;
@@ -165,7 +169,7 @@ mod tests {
     use crate::tests_support::{temp_path, valid_peer_hex};
     use p2p_trust::IdentityKey;
 
-    fn two_peers() -> (String, String) {
+    fn two_peers() -> (PeerIdHex, PeerIdHex) {
         let a = valid_peer_hex();
         let b = loop {
             let hex = valid_peer_hex();
@@ -180,7 +184,8 @@ mod tests {
     fn missing_file_is_empty() {
         let dir = temp_path();
         let store = NicknameStore::load(&dir).expect("load");
-        assert!(store.get("anything").is_none());
+        let fake_id = valid_peer_hex();
+        assert!(store.get(&fake_id).is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -188,7 +193,7 @@ mod tests {
     fn set_get_remove_and_restart() {
         let dir = temp_path();
         let peer = IdentityKey::generate().peer_id();
-        let hex = crate::to_hex(peer.as_bytes());
+        let hex = crate::to_hex(peer.as_bytes()).parse::<PeerIdHex>().expect("parse");
         let mut store = NicknameStore::load(&dir).expect("load");
         store.set(&hex, "Alice").expect("set");
         assert_eq!(store.get(&hex), Some("Alice"));
@@ -204,10 +209,10 @@ mod tests {
 
         store.remove(&hex).expect("remove");
         assert!(store.get(&hex).is_none());
-        assert_eq!(store.display_name(&hex), short_id(&hex));
+        assert_eq!(store.display_name(&hex), short_id(hex.as_str()));
         let reloaded = NicknameStore::load(&dir).expect("reload after delete");
         assert!(reloaded.get(&hex).is_none());
-        assert_eq!(reloaded.display_name(&hex), hex[..8].to_owned());
+        assert_eq!(reloaded.display_name(&hex), hex.as_str()[..8].to_owned());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -216,7 +221,7 @@ mod tests {
         let dir = temp_path();
         let store = NicknameStore::load(&dir).expect("load");
         let hex = valid_peer_hex();
-        assert_eq!(store.display_name(&hex), &hex[..8]);
+        assert_eq!(store.display_name(&hex), &hex.as_str()[..8]);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -224,14 +229,16 @@ mod tests {
     fn empty_or_duplicate_nickname_is_rejected() {
         let dir = temp_path();
         let (a, b) = two_peers();
+        let a_id = a;
+        let b_id = b;
         let mut store = NicknameStore::load(&dir).expect("load");
-        assert_eq!(store.set(&a, "  ").unwrap_err(), Error::EmptyNickname);
-        store.set(&a, "Alice").expect("set");
+        assert_eq!(store.set(&a_id, "  ").unwrap_err(), Error::EmptyNickname);
+        store.set(&a_id, "Alice").expect("set");
         assert_eq!(
-            store.set(&b, "Alice").unwrap_err(),
+            store.set(&b_id, "Alice").unwrap_err(),
             Error::DuplicateNickname
         );
-        store.set(&a, "Alice").expect("same peer rename to self ok");
+        store.set(&a_id, "Alice").expect("same peer rename to self ok");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -242,7 +249,7 @@ mod tests {
         let mut store = NicknameStore::load(&dir).expect("load");
         store.set(&a, "Alice").expect("set");
 
-        let (_, hex) = resolve_dial(&store, &a).expect("hex");
+        let (_, hex) = resolve_dial(&store, a.as_str()).expect("hex");
         assert_eq!(hex, a);
         let (_, hex) = resolve_dial(&store, "Alice").expect("nick");
         assert_eq!(hex, a);
@@ -271,7 +278,7 @@ mod tests {
         let dir = temp_path();
         let store = NicknameStore::load(&dir).expect("load");
         let hex = valid_peer_hex();
-        let upper = hex.to_ascii_uppercase();
+        let upper = hex.as_str().to_ascii_uppercase();
         let (_, got) = resolve_dial(&store, &upper).expect("upper");
         assert_eq!(got, hex);
         let _ = fs::remove_dir_all(&dir);
