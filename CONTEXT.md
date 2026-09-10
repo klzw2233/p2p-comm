@@ -2,10 +2,10 @@
 
 ## 术语表
 
-- **Session**: P2PCore 提供的一对一连接抽象，封装 QUIC 连接 + **一条**可靠双向流 + 数据报能力。v1 不另开第二条可靠流。
+- **Session**: P2PCore 提供的一对一连接抽象,封装 QUIC 连接 + **一条**可靠双向流 + 数据报能力。v1 不另开第二条可靠流。
 - **Peer**: 一个 Identity Key 对应的远端实体；一台设备一把 Identity Key
 - **本地昵称**: 用户给远端 Peer 起的名字，存本地 JSON，不上线传输
-- **信任状态**: Verified（已验证）/ TOFU（首次信任）/ Untrusted（不信任），由 P2PCore 的 TrustStore 管理
+- **信任状态**: Verified（已验证）/ TOFU（首次信任）/ Unknown（不信任，等价于 spec 中的"Untrusted"），由 P2PCore 的 TrustStore 管理。P2PCore 的 `TrustState` 枚举只有三个值：`Verified`、`Tofu`、`Unknown`，其中 `Unknown` 对应 spec 文档中提到的"Untrusted"语义
 - **信令**: 通话邀请/接受/拒绝/结束等控制消息，走可靠流，复用 p2p-chat ADR-0001 帧格式
 - **媒体流**: 音视频实时数据。音频走 QUIC 数据报（不可靠）；视频走数据报但 NAL 必须切到 path MTU 以内（见 issue #1）
 - **数据目录**: 存放身份密钥、信任记录、本地昵称表、加密聊天记录的目录

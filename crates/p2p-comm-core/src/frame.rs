@@ -235,6 +235,20 @@ mod tests {
     }
 
     #[test]
+    fn unknown_variant_with_fields_is_ignored() {
+        // Future version might add {"type": "FutureFeature", "data": 42}.
+        // Old clients must ignore it gracefully rather than panic.
+        let json = br#"{"type":"FutureFeature","magic":42,"nested":{"x":1}}"#;
+        let mut frame = Vec::new();
+        let len = u32::try_from(json.len()).expect("tiny");
+        frame.extend_from_slice(&len.to_le_bytes());
+        frame.extend_from_slice(json);
+        let (decoded, n) = decode_frame(&frame).expect("decode");
+        assert_eq!(n, frame.len());
+        assert_eq!(decoded, Decoded::Ignored);
+    }
+
+    #[test]
     fn call_invite_audio_roundtrip() {
         let frame = encode_call_invite(MediaType::Audio);
         let json = std::str::from_utf8(&frame[4..]).expect("utf8");
