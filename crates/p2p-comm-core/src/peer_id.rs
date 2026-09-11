@@ -15,19 +15,19 @@ impl PeerIdHex {
         Self(crate::to_hex(peer.as_bytes()))
     }
 
-    /// Create a validated `PeerIdHex` from a String.
+    /// Create a validated `PeerIdHex` from a hex string. Case is folded to lowercase.
     ///
     /// # Errors
     ///
     /// Returns an error if the input is not exactly 64 hexadecimal characters.
-    pub fn new(s: String) -> Result<Self, String> {
+    pub fn new(s: &str) -> Result<Self, String> {
         if s.len() != 64 {
             return Err(format!("invalid peer_id_hex: expected 64 chars, got {}", s.len()));
         }
         if !s.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err("invalid peer_id_hex: must contain only hex characters".into());
         }
-        Ok(Self(s))
+        Ok(Self(s.to_ascii_lowercase()))
     }
 
     /// Returns a reference to the inner hex string.
@@ -41,19 +41,13 @@ impl PeerIdHex {
     pub fn short(&self) -> &str {
         &self.0[..8]
     }
-
-    /// Consumes self and returns the inner String.
-    #[must_use]
-    pub fn into_inner(self) -> String {
-        self.0
-    }
 }
 
 impl FromStr for PeerIdHex {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s.to_string())
+        Self::new(s)
     }
 }
 
@@ -70,31 +64,31 @@ mod tests {
     #[test]
     fn valid_peer_id_hex() {
         let valid = "a".repeat(64);
-        let peer_id = PeerIdHex::new(valid.clone()).expect("valid");
+        let peer_id = PeerIdHex::new(&valid).expect("valid");
         assert_eq!(peer_id.as_str(), &valid);
     }
 
     #[test]
     fn short_returns_first_8_chars() {
-        let peer_id = PeerIdHex::new("0123456789abcdef".repeat(4)).expect("valid");
+        let peer_id = PeerIdHex::new(&"0123456789abcdef".repeat(4)).expect("valid");
         assert_eq!(peer_id.short(), "01234567");
     }
 
     #[test]
     fn reject_non_64_chars() {
         let too_short = "a".repeat(63);
-        let err = PeerIdHex::new(too_short).expect_err("too short");
+        let err = PeerIdHex::new(&too_short).expect_err("too short");
         assert!(err.contains("expected 64 chars"));
 
         let too_long = "a".repeat(65);
-        let err = PeerIdHex::new(too_long).expect_err("too long");
+        let err = PeerIdHex::new(&too_long).expect_err("too long");
         assert!(err.contains("expected 64 chars"));
     }
 
     #[test]
     fn reject_non_hex() {
         let invalid = "g".repeat(64);
-        let err = PeerIdHex::new(invalid).expect_err("non-hex");
+        let err = PeerIdHex::new(&invalid).expect_err("non-hex");
         assert!(err.contains("hex characters"));
     }
 
@@ -105,9 +99,16 @@ mod tests {
     }
 
     #[test]
+    fn new_lowercases_hex() {
+        let upper = "A".repeat(64);
+        let peer_id = PeerIdHex::new(&upper).expect("valid");
+        assert_eq!(peer_id.as_str(), &"a".repeat(64));
+    }
+
+    #[test]
     fn display_shows_full_hex() {
         let input = "f".repeat(64);
-        let peer_id = PeerIdHex::new(input.clone()).expect("valid");
+        let peer_id = PeerIdHex::new(&input).expect("valid");
         assert_eq!(format!("{peer_id}"), input);
     }
 }

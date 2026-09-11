@@ -4,10 +4,11 @@
 
 **当前阶段**: v1 功能已完成（文字 + 文件 + 语音 + 视频 + 审查修补票 #19–#25），剩朋友异机验收。
 
-**最新动态** (2026-09-10):
-- 全项目 code review 完成（Standards + Spec 两轴）
-- 架构文档与模块设计文档生成: [docs/architecture.md](./docs/architecture.md) / [docs/module-design.md](./docs/module-design.md)
-- 发现 3 处测试覆盖缺失 + 4 处代码气味，已开 issue #33 (Spec 修复) 和 #34 (架构改进)
+**最新动态** (2026-09-11):
+- issue #34 Step 1+2 已合入：`PeerIdHex` (#36) + `PeerState` (#37)
+- issue #34 仍 OPEN：可选 Step 3 `Transfer::try_enqueue_chunk` 未做
+- 全项目 code review 完成（Standards + Spec 两轴，2026-09-10）
+- 架构文档: [docs/architecture.md](./docs/architecture.md) / [docs/module-design.md](./docs/module-design.md)
 
 栈评估（2026-09-06）: [notes/2026-09-06-stack-architecture-review.md](./notes/2026-09-06-stack-architecture-review.md)
 
@@ -73,7 +74,7 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 5. ~~v1 审查修补~~ issue #19 (已关：#20–#25)
 6. ~~全项目 code review~~ 完成 (2026-09-10)
 7. **Spec 修复**: issue #33 (补充测试覆盖与映射确认)
-8. **(可选) 架构改进**: issue #34 (消除 Primitive Obsession 与 Data Clumps)
+8. **(可选) 架构改进**: issue #34 Step 1+2 已合入；剩可选 Step 3 `Transfer::try_enqueue_chunk`
 9. 朋友异机验收
 10. macOS：#1 完成后再开独立 spec（ADR-0001）
 
