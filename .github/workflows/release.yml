@@ -60,7 +60,7 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             p2p-comm-gui-*.tar.gz
