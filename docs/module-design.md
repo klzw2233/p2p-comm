@@ -79,6 +79,7 @@ impl eframe::App for App {
 ```
 p2p-comm-core/
 ├── lib.rs          # 公开 API 导出
+├── peer_id.rs      # PeerIdHex newtype
 ├── node.rs         # 核心状态机
 ├── frame.rs        # 可靠流帧编解码
 ├── audio.rs        # Opus 编解码
@@ -88,7 +89,7 @@ p2p-comm-core/
 ├── chatlog.rs      # 加密聊天记录
 ├── nicknames.rs    # 本地昵称表
 ├── roster.rs       # 已知 Peer 列表
-└── inbox.rs        # 待确认 offer
+└── inbox.rs        # 聊天记录 + 未读
 ```
 
 ---
@@ -107,21 +108,21 @@ p2p-comm-core/
 
 ```rust
 impl Node {
-    pub fn new(password: &str, data_dir: PathBuf) -> Result<Self>;
-    pub fn dial(&mut self, peer_id_hex: &str) -> Result<()>;
-    pub fn send_text(&mut self, peer_id_hex: &str, content: &str) -> Result<()>;
-    pub fn send_file(&mut self, peer_id_hex: &str, path: PathBuf) -> Result<()>;
-    pub fn accept_file(&mut self, peer_id_hex: &str) -> Result<()>;
-    pub fn reject_file(&mut self, peer_id_hex: &str) -> Result<()>;
-    pub fn invite_audio(&mut self, peer_id_hex: &str) -> Result<()>;
-    pub fn invite_video(&mut self, peer_id_hex: &str) -> Result<()>;
-    pub fn accept_call(&mut self, peer_id_hex: &str) -> Result<()>;
-    pub fn reject_call(&mut self, peer_id_hex: &str) -> Result<()>;
-    pub fn hangup(&mut self) -> Result<()>;
-    pub fn poll(&mut self) -> Result<Option<Event>>;
+    pub async fn start(dir: &Path, password: &str) -> Result<Self, Error>;
+    pub fn dial(&mut self, input: &str) -> Result<(), Error>; // nickname-or-hex
+    pub fn send_text(&mut self, peer_id_hex: &PeerIdHex, content: &str) -> Result<(), Error>;
+    pub fn send_file(&mut self, peer_id_hex: &PeerIdHex, path: &Path) -> Result<(), Error>;
+    pub fn accept_file(&mut self, peer_id_hex: &PeerIdHex);
+    pub fn reject_file(&mut self, peer_id_hex: &PeerIdHex);
+    pub fn invite_audio(&mut self, peer_id_hex: &PeerIdHex) -> Result<(), Error>;
+    pub fn invite_video(&mut self, peer_id_hex: &PeerIdHex) -> Result<(), Error>;
+    pub fn accept_call(&mut self, peer_id_hex: &PeerIdHex);
+    pub fn reject_call(&mut self, peer_id_hex: &PeerIdHex);
+    pub fn hangup(&mut self);
+    pub fn poll(&mut self) -> bool;
     pub fn snapshot(&self) -> Snapshot;
-    pub fn set_nickname(&mut self, peer_id_hex: &str, nickname: &str) -> Result<()>;
-    pub fn remove_nickname(&mut self, peer_id_hex: &str) -> Result<()>;
+    pub fn set_nickname(&mut self, peer_id_hex: &PeerIdHex, nickname: &str) -> Result<(), Error>;
+    pub fn remove_nickname(&mut self, peer_id_hex: &PeerIdHex) -> Result<(), Error>;
 }
 ```
 
@@ -129,37 +130,23 @@ impl Node {
 
 ```rust
 struct Node {
-    // Session 管理
-    live: HashMap<String, LivePeer>,        // peer_id_hex → Session + 状态
-    
-    // 文件传输
-    transfers: HashMap<String, Transfer>,   // peer_id_hex → 传输状态
-    
-    // 通话 (全进程单路)
+    peers: HashMap<PeerIdHex, PeerState>,
     call: Option<CallState>,
-    
-    // 数据报通道
-    dgram_tx: HashMap<String, ...>,
-    max_dgram: HashMap<String, usize>,
-    
-    // 存储
-    nicknames: Nicknames,
-    chatlog: ChatLog,
+    nicknames: NicknameStore,
     roster: Roster,
     inbox: Inbox,
-    
-    // 事件队列
-    event_rx: mpsc::UnboundedReceiver<Event>,
-    event_tx: mpsc::UnboundedSender<Event>,
-    
-    // I/O 通道
+    keys: ChatKeys,
+    io_events: mpsc::UnboundedReceiver<IoEvent>,
     io_tx: mpsc::UnboundedSender<IoEvent>,
 }
 
-enum LivePeer {
-    Connecting,
-    Connected { session: Session, trust: TrustState },
-    Failed { error: String },
+struct PeerState {
+    live: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    transfer: Option<Transfer>,
+    pending: Option<IncomingOffer>,
+    dgram_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    max_dgram: Option<usize>,
+    trust: TrustState,
 }
 
 struct Transfer {
@@ -180,7 +167,7 @@ enum TransferStatus {
 }
 
 struct CallState {
-    peer_id_hex: String,
+    peer_id_hex: PeerIdHex,
     media: MediaType,
     phase: CallPhase,
     result: Option<CallResult>,  // issue #24
@@ -332,41 +319,19 @@ pub fn poll(&mut self) -> Result<Option<Event>> {
 ### 3.6 文件排队实现 (issue #22)
 
 ```rust
-fn enqueue_next_chunk(&mut self, peer_id_hex: &str) -> Result<()> {
-    let transfer = self.transfers.get_mut(peer_id_hex)?;
-    
-    // 只取 64KiB
-    let remaining = transfer.size - transfer.next_offset;
-    let chunk_size = remaining.min(64 * 1024);
-    
-    if chunk_size == 0 {
-        // 全部发完
-        transfer.status = TransferStatus::Complete;
-        return Ok(());
+fn enqueue_next_chunk(&mut self, peer_id_hex: &PeerIdHex) {
+    let Some(xfer) = self.peers.get_mut(peer_id_hex).and_then(|p| p.transfer.as_mut()) else {
+        return;
+    };
+    // 只取 64KiB；写完一块等 SendProgress 再入队下一块（issue #22）
+    let offset = usize::try_from(xfer.next_offset).unwrap_or(usize::MAX);
+    if offset >= xfer.bytes.len() {
+        return;
     }
-    
-    let chunk = &transfer.buffer[transfer.next_offset..][..chunk_size];
-    let frame = encode_file_chunk(transfer.next_offset, chunk);
-    
-    // 发送这一块
-    let session = self.get_session(peer_id_hex)?;
-    session.send_reliable(&frame)?;
-    
-    // 更新偏移，但**不立即**入队下一块
-    transfer.next_offset += chunk_size;
-    
-    Ok(())
-}
-
-// 在 handle_send_progress() 里：
-fn handle_send_progress(&mut self, peer_id: String, bytes_written: u64) -> Result<()> {
-    // 当前块写完后，才入队下一块
-    if let Some(transfer) = self.transfers.get(&peer_id) {
-        if transfer.next_offset < transfer.size {
-            self.enqueue_next_chunk(&peer_id)?;
-        }
-    }
-    Ok(())
+    let end = (offset + 64 * 1024).min(xfer.bytes.len());
+    let frame = encode_file_chunk(xfer.next_offset, &xfer.bytes[offset..end]);
+    xfer.next_offset = u64::try_from(end).unwrap_or(u64::MAX);
+    self.send_to_live(peer_id_hex, frame);
 }
 ```
 
@@ -675,15 +640,15 @@ impl VideoCapture {
 ### 9.2 接口
 
 ```rust
-pub struct ChatLog {
-    data_dir: PathBuf,
-    master_key: [u8; 32],
+pub struct ChatKeys {
+    dir: PathBuf,
+    master: [u8; 32],
 }
 
-impl ChatLog {
-    pub fn new(password: &str, data_dir: PathBuf) -> Result<Self>;
-    pub fn load(&self, peer_id_hex: &str) -> Result<Vec<Message>>;
-    pub fn append(&mut self, peer_id_hex: &str, msg: &Message) -> Result<()>;
+impl ChatKeys {
+    pub fn unlock(dir: &Path, password: &str) -> Result<Self, Error>;
+    pub fn load(&self, peer_id_hex: &str) -> Result<Vec<ChatMessage>, Error>; // 文件名/HKDF info
+    pub fn append(&self, peer_id_hex: &str, msg: &ChatMessage) -> Result<(), Error>;
 }
 ```
 
@@ -725,16 +690,17 @@ ChaCha20-Poly1305
 ### 10.2 接口
 
 ```rust
-pub struct Nicknames {
+pub struct NicknameStore {
     path: PathBuf,
-    map: HashMap<String, String>,  // peer_id_hex → nickname
+    by_peer: BTreeMap<PeerIdHex, String>,
 }
 
-impl Nicknames {
-    pub fn load(path: PathBuf) -> Result<Self>;
-    pub fn get(&self, peer_id_hex: &str) -> Option<&str>;
-    pub fn set(&mut self, peer_id_hex: &str, nickname: &str) -> Result<()>;
-    pub fn remove(&mut self, peer_id_hex: &str) -> Result<()>;
+impl NicknameStore {
+    pub fn load(dir: &Path) -> Result<Self, Error>;
+    pub fn get(&self, peer_id_hex: &PeerIdHex) -> Option<&str>;
+    pub fn set(&mut self, peer_id_hex: &PeerIdHex, nickname: &str) -> Result<(), Error>;
+    pub fn remove(&mut self, peer_id_hex: &PeerIdHex) -> Result<(), Error>;
+    pub fn display_name(&self, peer_id_hex: &PeerIdHex) -> String; // nickname or PeerIdHex::short()
 }
 ```
 
@@ -767,13 +733,9 @@ impl Nicknames {
 
 ```rust
 pub struct Roster {
-    peers: Vec<String>,  // peer_id_hex
-}
-
-impl Roster {
-    pub fn new() -> Self;
-    pub fn add(&mut self, peer_id_hex: String);
-    pub fn list(&self) -> &[String];
+    peers: BTreeMap<PeerIdHex, PeerStatus>,
+    selected: Option<PeerIdHex>,
+    errors: BTreeMap<PeerIdHex, ChatError>,
 }
 ```
 
@@ -783,20 +745,15 @@ impl Roster {
 
 ### 12.1 职责
 
-- 待确认文件 offer 队列 (TOFU peer)
+- 内存中的聊天记录 + 未读计数。磁盘走 `ChatKeys`。
+- TOFU 文件 offer 不在这里，在 `PeerState.pending`。
 
 ### 12.2 接口
 
 ```rust
 pub struct Inbox {
-    offers: HashMap<String, FileOffer>,  // peer_id_hex → offer
-}
-
-impl Inbox {
-    pub fn new() -> Self;
-    pub fn add_offer(&mut self, peer_id_hex: String, offer: FileOffer);
-    pub fn take_offer(&mut self, peer_id_hex: &str) -> Option<FileOffer>;
-    pub fn pending(&self) -> Vec<&str>;
+    by_peer: BTreeMap<PeerIdHex, Vec<ChatMessage>>,
+    unread: BTreeMap<PeerIdHex, u32>,
 }
 ```
 
@@ -915,9 +872,9 @@ Event::Disconnected { peer, error }
 
 ### 17.1 架构 (code review 发现)
 
-- [ ] `PeerIdHex(String)` newtype (消除 Primitive Obsession)
-- [ ] `PeerState` struct (消除 Data Clumps)
-- [ ] `Transfer::try_enqueue_chunk()` (消除 Shotgun Surgery)
+- [x] `PeerIdHex(String)` newtype (消除 Primitive Obsession) — issue #34 PR1 (#36)
+- [x] `PeerState` struct (消除 Data Clumps) — issue #34 PR2 (#37)
+- [ ] `Transfer::try_enqueue_chunk()` (消除 Shotgun Surgery；issue #34 可选)
 - [ ] `Snapshot` 增量更新 (减少深拷贝)
 
 ### 17.2 测试 (spec review 发现)

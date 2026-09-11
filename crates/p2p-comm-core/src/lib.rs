@@ -21,7 +21,7 @@ pub use frame::{
     Decoded, MediaType,
 };
 pub use inbox::{ChatMessage, Direction};
-pub use nicknames::{resolve_dial, short_id, NicknameStore};
+pub use nicknames::{resolve_dial, NicknameStore};
 pub use node::{
     CallPhase, CallResult, CallView, FileProgress, Node, PendingInvite, PendingOffer, SidebarItem,
     Snapshot, TransferStatus,
@@ -147,22 +147,15 @@ pub(crate) fn to_hex(bytes: &[u8]) -> String {
     out
 }
 
-pub(crate) fn looks_like_hex_id(input: &str) -> bool {
-    input.len() == 64 && input.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
 pub(crate) fn parse_peer_id_hex(input: &str) -> Result<(PeerId, PeerIdHex), Error> {
-    if !looks_like_hex_id(input) {
-        return Err(Error::InvalidPeerId);
-    }
+    let peer_id_hex = PeerIdHex::new(input).map_err(|_| Error::InvalidPeerId)?;
     let mut bytes = [0u8; 32];
-    for (i, chunk) in input.as_bytes().chunks_exact(2).enumerate() {
+    for (i, chunk) in peer_id_hex.as_str().as_bytes().chunks_exact(2).enumerate() {
         let slot = [chunk[0], chunk[1]];
         let hex = std::str::from_utf8(&slot).map_err(|_| Error::InvalidPeerId)?;
         bytes[i] = u8::from_str_radix(hex, 16).map_err(|_| Error::InvalidPeerId)?;
     }
     let peer = PeerId::from_bytes(bytes).map_err(|_| Error::InvalidPeerId)?;
-    let peer_id_hex = PeerIdHex::from_peer_id(&peer);
     Ok((peer, peer_id_hex))
 }
 

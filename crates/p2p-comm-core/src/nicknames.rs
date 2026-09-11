@@ -42,7 +42,7 @@ impl NicknameStore {
     #[must_use]
     pub fn display_name(&self, peer_id_hex: &PeerIdHex) -> String {
         self.get(peer_id_hex)
-            .map_or_else(|| short_id(peer_id_hex.as_str()), ToOwned::to_owned)
+            .map_or_else(|| peer_id_hex.short().to_owned(), ToOwned::to_owned)
     }
 
     /// Reverse lookup: nickname → 64-char hex Peer ID.
@@ -64,7 +64,6 @@ impl NicknameStore {
     ///
     /// # Errors
     ///
-    /// * [`Error::InvalidPeerId`] if `peer_id_hex` is not a 64-char hex Peer ID
     /// * [`Error::EmptyNickname`] if `nickname` is empty
     /// * [`Error::DuplicateNickname`] if another Peer already has this nickname
     /// * [`Error::Io`] if the file cannot be written
@@ -113,11 +112,6 @@ pub fn resolve_dial(store: &NicknameStore, input: &str) -> Result<(PeerId, PeerI
         .peer_id_hex_for_nickname(input)
         .ok_or(Error::UnknownNickname)
         .and_then(|hex| parse_peer_id_hex(hex.as_str()))
-}
-
-#[must_use]
-pub fn short_id(peer_id_hex: &str) -> String {
-    peer_id_hex.chars().take(8).collect()
 }
 
 fn parse_file(bytes: &[u8]) -> Result<BTreeMap<PeerIdHex, String>, Error> {
@@ -209,7 +203,7 @@ mod tests {
 
         store.remove(&hex).expect("remove");
         assert!(store.get(&hex).is_none());
-        assert_eq!(store.display_name(&hex), short_id(hex.as_str()));
+        assert_eq!(store.display_name(&hex), hex.short());
         let reloaded = NicknameStore::load(&dir).expect("reload after delete");
         assert!(reloaded.get(&hex).is_none());
         assert_eq!(reloaded.display_name(&hex), hex.as_str()[..8].to_owned());

@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use p2p_comm_core::{
-    default_data_dir, has_stored_identity, short_id, CallPhase, CallResult, Error, FileProgress,
+    default_data_dir, has_stored_identity, CallPhase, CallResult, Error, FileProgress,
     MediaType, Node, PeerIdHex, PeerStatus, PendingInvite, PendingOffer, Snapshot, TransferStatus, VideoFrame,
 };
 
@@ -230,18 +230,10 @@ fn sidebar_ui(ui: &mut egui::Ui, main: &mut MainState, snap: &Snapshot) {
             }
         });
     }
-    if let Some(peer) = select {
+    if let Some(peer) = select.or(set_nick) {
         main.node.select(&peer);
         main.nickname_draft = main.node.display_name(&peer);
-        if main.nickname_draft == short_id(peer.as_str()) {
-            main.nickname_draft.clear();
-        }
-        main.nickname_error = None;
-    }
-    if let Some(peer) = set_nick {
-        main.node.select(&peer);
-        main.nickname_draft = main.node.display_name(&peer);
-        if main.nickname_draft == short_id(peer.as_str()) {
+        if main.nickname_draft == peer.short() {
             main.nickname_draft.clear();
         }
         main.nickname_error = None;

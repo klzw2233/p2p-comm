@@ -68,24 +68,18 @@ p2p-comm 是一个端到端加密的点对点通讯工具，支持文字消息�
 **关键交互**:
 ```rust
 // 启动流程
-let node = Node::new(password, data_dir)?;
+let mut node = Node::start(data_dir, password).await?;
 
-// 拨号
-node.dial(peer_id_hex)?;
+// 拨号（昵称或 64 字符 hex）
+node.dial(input)?;
 
 // 发送文字
-node.send_text(peer_id_hex, content)?;
+node.send_text(&peer_id_hex, content)?;
 
-// 轮询事件
-while let Some(event) = node.poll()? {
-    match event {
-        Event::TextReceived { from, content, .. } => /* 更新 UI */,
-        Event::CallInvite { from, media } => /* 弹窗 */,
-        // ...
-    }
+// GUI tick：排空网络事件，再画 snapshot
+if node.poll() {
+    // 状态变了，重绘
 }
-
-// 快照状态
 let snapshot = node.snapshot();
 ```
 
@@ -105,20 +99,26 @@ let snapshot = node.snapshot();
 **状态维护**:
 ```rust
 struct Node {
-    live: HashMap<String, LivePeer>,        // peer_id_hex → Session + 状态
-    transfers: HashMap<String, Transfer>,   // peer_id_hex → 文件传输状态
+    peers: HashMap<PeerIdHex, PeerState>,   // 连接 / 传输 / 信任 一起走
     call: Option<CallState>,                // 全进程唯一通话
-    dgram_tx: HashMap<String, ...>,         // 数据报发送通道
-    nicknames: Nicknames,                   // 本地昵称表
-    chatlog: ChatLog,                       // 加密聊天记录
+    nicknames: NicknameStore,               // 本地昵称表
     roster: Roster,                         // 已知 Peer 列表
-    inbox: Inbox,                           // 待确认文件 offer
+    inbox: Inbox,                           // 聊天记录 + 未读
     // ...
+}
+
+struct PeerState {
+    live: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    transfer: Option<Transfer>,
+    pending: Option<IncomingOffer>,
+    dgram_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    max_dgram: Option<usize>,
+    trust: TrustState,
 }
 ```
 
 **关键不变量**:
-- 每个 `peer_id_hex` 最多对应一个 `LivePeer::Connected` 或 `Connecting`
+- 每个 `peer_id_hex` 最多对应一个 live session（`PeerState.live`）
 - `call.is_some()` 时，任何新通话邀请失败 (全进程单路)
 - 断开的 Session 状态变为 `Failed`，允许重拨
 
@@ -242,7 +242,7 @@ ChaCha20-Poly1305
 
 #### 2.10 Inbox (inbox.rs)
 
-**职责**: 待确认文件 offer 队列 (TOFU peer)
+**职责**: 内存中的聊天记录 + 未读计数。磁盘走 `ChatKeys`。TOFU 文件 offer 在 `PeerState.pending`。
 
 ### 3. P2PCore (git 依赖)
 
@@ -456,9 +456,9 @@ GUI 点语音按钮
 
 ### 中期 (架构改进)
 
-- [ ] 引入 `PeerIdHex(String)` newtype (消除 Primitive Obsession)
-- [ ] 提取 `PeerState` struct (消除 Data Clumps)
-- [ ] Transfer 逻辑封装为方法 (消除 Shotgun Surgery)
+- [x] 引入 `PeerIdHex(String)` newtype (消除 Primitive Obsession) — issue #34 PR1 (#36)
+- [x] 提取 `PeerState` struct (消除 Data Clumps) — issue #34 PR2 (#37)
+- [ ] Transfer 逻辑封装为方法 (消除 Shotgun Surgery；issue #34 可选 Step 3)
 
 ### 长期 (功能扩展)
 

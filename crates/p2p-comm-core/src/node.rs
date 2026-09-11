@@ -1482,7 +1482,7 @@ fn io_event(peer_id_hex: &PeerIdHex, decoded: Decoded) -> Option<IoEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nicknames::{short_id, NicknameStore};
+    use crate::nicknames::NicknameStore;
     use crate::tests_support::{temp_path, valid_peer_hex};
 
     #[test]
@@ -1499,7 +1499,7 @@ mod tests {
         let snap = snapshot(&nicks, &roster, &inbox, &HashMap::new(), &me);
         let labels: Vec<_> = snap.sidebar.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"Alice"));
-        assert!(labels.iter().any(|l| *l == short_id(bob.as_str())));
+        assert!(labels.iter().any(|l| *l == bob.short()));
         assert!(!labels.contains(&bob.as_str()));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1515,7 +1515,7 @@ mod tests {
         let me = valid_peer_hex();
         let snap = snapshot(&nicks, &roster, &inbox, &HashMap::new(), &me);
         assert_eq!(snap.sidebar.len(), 1);
-        assert_eq!(snap.sidebar[0].label, short_id(peer.as_str()));
+        assert_eq!(snap.sidebar[0].label, peer.short());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
