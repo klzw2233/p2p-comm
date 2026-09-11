@@ -12,6 +12,7 @@
   - Linux: `~/.local/share/p2p-comm`
   - Windows: `%APPDATA%\p2p-comm`
   - `--profile NAME`（同机第二身份）: 平台数据目录下的 `p2p-comm-NAME`
+  - macOS（spec #42，未实现）: `~/Library/Application Support/p2p-comm`
 
 ## 架构
 
@@ -29,7 +30,7 @@
 └─────────────────────┘
 ```
 
-权威规格: GitHub issue #1。`docs/spec-v1.md` 是同步副本。栈评估: `notes/2026-09-06-stack-architecture-review.md`。Mac 不进 v1：见 [ADR-0001](docs/adr/0001-defer-macos.md)。
+权威规格: GitHub issue #1。`docs/spec-v1.md` 是同步副本。栈评估: `notes/2026-09-06-stack-architecture-review.md`。macOS：增量 spec [issue #42](https://github.com/klzw2233/p2p-comm/issues/42)，见 [ADR-0002](docs/adr/0002-macos-client.md)。#41 已关，实现可开工（未实现）。ADR-0001 已 superseded。
 
 ## 范围
 
@@ -41,10 +42,10 @@
 - 本地昵称表（JSON 存储）
 - 加密聊天记录（JSONL；Argon2id 派生主密钥，再 HKDF 按 Peer 分密钥，ChaCha20-Poly1305）
 - 多会话 UI（侧边栏昵称列表，并行聊天）
-- 平台: Linux + Windows 10（macOS 见 ADR-0001，#1 之后另开 spec）
+- 平台: Linux + Windows 10。macOS 增量 spec 见 issue #42 / ADR-0002（未实现；#41 已关）
 
 **范围外**:
-- macOS 客户端（推迟到 #1 完成后的独立 spec；不是架构限制）
+- macOS 客户端实现（spec 在 #42；#41 已关，尚未写代码；不是架构限制）
 - 移动端（安卓/iOS）
 - 回声消除（文档写明"请用耳机"）
 - 设备选择（v1 只抓系统默认设备）
@@ -61,7 +62,7 @@
 
 - **P2PCore**: Session 抽象、信任管理、身份密码封装（git 依赖 `main`）
 - **eframe/egui**: 0.30（不跟 0.36：MSRV 不够）
-- **nokhwa**: 0.10，`input-v4l` + `input-msmf`
+- **nokhwa**: 0.10，`input-v4l` + `input-msmf`（macOS `input-avfoundation` 属 #42，未实现）
 - **openh264**: 0.9
 - **opus**: 0.4
 - **cpal**: 0.18（系统默认设备）
@@ -71,8 +72,8 @@
 
 ## 验证策略
 
-- CI: GitHub Actions `ubuntu-latest` + `windows-latest` 矩阵
-- 发布: 推送 `v*` tag 触发 Linux + Windows GUI `--release`，产物挂 GitHub Release
+- CI: GitHub Actions `ubuntu-latest` + `windows-latest` 矩阵（`macos-latest` 属 #42，未实现）
+- 发布: 推送 `v*` tag 触发 Linux + Windows GUI `--release`，产物挂 GitHub Release（Mac `.app` zip 属 #42）
 - CI 保证: `cargo build` / `cargo test`（不含真实设备的部分）编译通过
 - 测试只挂 `p2p-comm-core`（假 Session 或进程内双端）
-- 真实设备测试: 朋友异机验证（同机 Win10 宿主 + Ubuntu VM 抢设备不可靠）
+- 真实设备测试: 朋友异机验证（issue #41 已关；同机 Win10 宿主 + Ubuntu VM 抢设备不可靠）

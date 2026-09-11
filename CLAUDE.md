@@ -19,8 +19,8 @@
 
 - 单元测试: 核心逻辑必须有测试覆盖
 - 集成测试: 挂在 `p2p-comm-core`（无 GUI 依赖）
-- 真实设备测试: 通过朋友异机验证（同机 Win10 + Ubuntu VM 抢设备不可靠）
-- CI: 保证 `cargo build` / `cargo test` 在 Linux 和 Windows 上编译通过
+- 真实设备测试: 通过朋友异机验证（同机 Win10 + Ubuntu VM 抢设备不可靠）；跟踪票 issue #41
+- CI: 保证 `cargo build` / `cargo test` 在 Linux 和 Windows 上编译通过（`macos-latest` 属 issue #42，未实现）
 
 ## CI 配置
 
@@ -28,9 +28,11 @@ GitHub Actions 矩阵（`.github/workflows/ci.yml`）:
 - `ubuntu-latest`
 - `windows-latest`
 
+（`macos-latest` 属 issue #42，未实现。）
+
 手动编 Win10 GUI（`.github/workflows/win10-gui.yml`）: Actions → Win10 GUI → Run workflow，产物 `p2p-comm-gui.exe`。
 
-推送 `v*` tag 触发 `.github/workflows/release.yml`：Linux + Windows `--release` 编 GUI，打包 tar.gz + sha256，创建 GitHub Release。
+推送 `v*` tag 触发 `.github/workflows/release.yml`：Linux + Windows `--release` 编 GUI，打包 tar.gz + sha256，创建 GitHub Release。Mac `.app` zip 属 issue #42。
 
 ## 文档要求
 

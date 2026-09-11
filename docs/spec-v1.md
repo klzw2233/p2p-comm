@@ -2,7 +2,7 @@
 
 ## 目标
 
-基于 P2PCore（git 依赖 `main`）构建跨平台（Linux + Windows 10）P2P 通讯工具，支持：
+基于 P2PCore（git 依赖 `main`）构建跨平台（Linux + Windows 10；macOS 见 issue #42 / ADR-0002，未实现）P2P 通讯工具，支持：
 
 - 文字消息
 - 文件传输
@@ -16,12 +16,12 @@
 
 - **核心**: P2PCore (git dep, `main`)
 - **GUI**: eframe 0.30 / egui 0.30（不跟 0.36：MSRV 1.80）
-- **摄像头**: nokhwa 0.10 (Linux V4L2 + Windows MSMF)
+- **摄像头**: nokhwa 0.10 (Linux V4L2 + Windows MSMF；macOS AVFoundation 属 #42)
 - **视频编解码**: openh264 0.9
 - **音频编解码**: opus 0.4
 - **音频 I/O**: cpal 0.18
-- **数据目录**: dirs 6.0（Linux `~/.local/share/p2p-comm`，Windows `%APPDATA%\p2p-comm`）
-- **平台**: Linux + Windows 10（CI 矩阵验证编译通过）。macOS 不进 v1，见 ADR-0001。
+- **数据目录**: dirs 6.0（Linux `~/.local/share/p2p-comm`，Windows `%APPDATA%\p2p-comm`，macOS `~/Library/Application Support/p2p-comm` 属 #42）
+- **平台**: Linux + Windows 10（CI 矩阵验证编译通过）。macOS 增量 spec 见 issue #42 / ADR-0002（未实现；#41 已关）。
 
 ## 架构
 
@@ -181,13 +181,13 @@ A/B: CallEnd
 
 ### 8. 验证策略
 
-- **CI**: `cargo build` + `cargo test` 在 ubuntu-latest + windows-latest 通过
-- **真实设备**: 找朋友异机测试音视频（Win10 宿主机 + Ubuntu VM 同机抢设备不可靠）
+- **CI**: `cargo build` + `cargo test` 在 ubuntu-latest + windows-latest 通过（macos-latest 属 #42）
+- **真实设备**: 找朋友异机测试音视频（Win10 宿主机 + Ubuntu VM 同机抢设备不可靠）；跟踪票 issue #41（已关）
 - **不依赖**: 同机双端测试
 
 ## 范围外（v1 不做）
 
-- macOS 客户端（推迟到 #1 完成后的独立 spec；见 ADR-0001）
+- macOS 客户端实现（增量 spec issue #42 / ADR-0002；#41 已关，尚未写代码）
 - 回声消除（文档写"请用耳机"）
 - 设备选择（只用系统默认）
 - 断点续传
