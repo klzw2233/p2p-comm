@@ -18,6 +18,7 @@
 
 - ✅ Linux
 - ✅ Windows 10
+- ⏳ macOS（Apple Silicon，spec [#42](https://github.com/klzw2233/p2p-comm/issues/42)，未实现；[#41](https://github.com/klzw2233/p2p-comm/issues/41) 已关）
 
 ## 快速开始
 
@@ -54,7 +55,7 @@ Actions → **Win10 GUI** → Run workflow。编完下载 artifact `p2p-comm-gui
 
 ### 发布
 
-推送 `v*` tag 会编 Linux / Windows release 并创建 GitHub Release：
+推送 `v*` tag 会编 Linux / Windows release 并创建 GitHub Release（Mac `.app` zip 见 issue #42，未实现）：
 
 ```bash
 git tag v0.1.0
@@ -80,6 +81,7 @@ git push origin v0.1.0
 
 - Linux: `~/.local/share/p2p-comm`
 - Windows: `%APPDATA%\p2p-comm`
+- macOS（spec #42，未实现）: `~/Library/Application Support/p2p-comm`
 
 包含:
 - 加密身份密钥

@@ -2,7 +2,7 @@
 
 ## 概述
 
-p2p-comm 是一个端到端加密的点对点通讯工具，支持文字消息、文件传输、实时语音/视频通话。基于 P2PCore 构建，采用 QUIC 传输协议，运行在 Linux 和 Windows 10 平台。
+p2p-comm 是一个端到端加密的点对点通讯工具，支持文字消息、文件传输、实时语音/视频通话。基于 P2PCore 构建，采用 QUIC 传输协议，运行在 Linux 和 Windows 10。macOS 见 ADR-0002 / issue #42（未实现）。
 
 ## 架构原则
 
@@ -400,7 +400,7 @@ GUI 点语音按钮
 
 ### 平台支持
 
-**现状**: Linux + Windows 10。macOS 见 ADR-0001 推迟。
+**现状**: Linux + Windows 10。macOS 增量 spec 见 ADR-0002 / issue #42（未实现；#41 已关）。
 
 **权衡**: 先验证核心流程，macOS 需解决 nokhwa AVFoundation 适配。
 
@@ -428,7 +428,7 @@ GUI 点语音按钮
 
 ### 真实设备测试
 
-**方式**: 朋友异机验证 (同机 Win10 + Ubuntu VM 抢设备不可靠)。拨号/文字可用 `--profile` 在同机开两个身份（不共用数据目录）；音视频仍抢默认设备。
+**方式**: 朋友异机验证（issue #41 已关；同机 Win10 + Ubuntu VM 抢设备不可靠）。拨号/文字可用 `--profile` 在同机开两个身份（不共用数据目录）；音视频仍抢默认设备。
 
 **验收**:
 - 文字消息双向
@@ -462,7 +462,7 @@ GUI 点语音按钮
 
 ### 长期 (功能扩展)
 
-- [ ] macOS 客户端 (ADR-0001)
+- [ ] macOS 客户端（ADR-0002 / issue #42；#41 已关，未实现）
 - [ ] 第二条 QUIC 可靠流 (文件传输与信令分离)
 - [ ] 视频: 一帧一流 + 过时 reset (消除丢包花屏)
 - [ ] 设备选择 UI
@@ -471,7 +471,7 @@ GUI 点语音按钮
 
 ## 参考
 
-- 权威 spec: GitHub issue #1
+- 权威 spec: GitHub issue #1（macOS 增量 spec: issue #42）
 - 术语表: CONTEXT.md
 - 架构决策: docs/adr/
 - 交接信息: HANDOFF.md

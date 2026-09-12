@@ -2,9 +2,11 @@
 
 ## 项目状态
 
-**当前阶段**: v1 功能已完成。#41 Win10 异机：拨号/文字/文件/语音/视频已通。中文方框：egui 默认无 CJK，启动时加载系统字体（微软雅黑 / Noto CJK）。
+**当前阶段**: v1 功能已完成。#41 Win10 异机：拨号/文字/文件/语音/视频已通并关闭。中文方框：egui 默认无 CJK，启动时加载系统字体（微软雅黑 / Noto CJK）。macOS 增量 spec 是 [issue #42](https://github.com/klzw2233/p2p-comm/issues/42)（#41 已关，实现可开工；未实现）。
 
 **最新动态** (2026-09-11):
+- 开出 [issue #41](https://github.com/klzw2233/p2p-comm/issues/41)（v1 异机验收）和 [issue #42](https://github.com/klzw2233/p2p-comm/issues/42)（macOS 增量 spec）
+- ADR-0002 取代 ADR-0001
 - issue #34 Step 1+2 已合入：`PeerIdHex` (#36) + `PeerState` (#37)
 - issue #34 仍 OPEN：可选 Step 3 `Transfer::try_enqueue_chunk` 未做
 - 全项目 code review 完成（Standards + Spec 两轴，2026-09-10）
@@ -41,7 +43,7 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 **核心原则**:
 - **workspace 两 crate**: `p2p-comm-core`（无头核心）+ `p2p-comm-gui`（eframe 0.30 前端）
 - **P2PCore 依赖**: git 依赖 `main`（数据报 API 已合入；`RelayConfig::n0_public()` 显式 opt-in）
-- **平台**: Linux + Windows 10，CI 矩阵覆盖两平台编译
+- **平台**: Linux + Windows 10，CI 矩阵覆盖两平台编译。macOS spec #42，未实现
 - **数据目录**: 自动使用平台标准位置（`dirs` crate 6.x）
 - **身份密码**: 启动弹窗输入，v1 不做钥匙串。封装走 P2PCore `FileKeyStore`（Argon2id + ChaCha20-Poly1305）
 - **多会话**: 侧边栏昵称列表，可同时和多个 Peer 聊天
@@ -50,7 +52,8 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 
 ## 已锁定决定（ADR）
 
-- [ADR-0001](docs/adr/0001-defer-macos.md): macOS 不并进 issue #1；#1 做完文件/语音/视频后再开独立 spec。协议真相仍在 issue #1。
+- [ADR-0001](docs/adr/0001-defer-macos.md): macOS 不并进 issue #1（superseded）
+- [ADR-0002](docs/adr/0002-macos-client.md): macOS 增量 spec 为 issue #42；行为 = #1；#41 已关
 
 ## 范围边界
 
@@ -60,7 +63,7 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 - 加密聊天记录落盘
 
 **不做**:
-- macOS（#1 之后另开 spec，见 ADR-0001）
+- macOS 实现（spec #42；#41 已关，尚未写代码；见 ADR-0002）
 - 移动端
 - 回声消除（文档写明用耳机）
 - 设备选择（v1 只抓默认设备）
@@ -77,10 +80,10 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 4. ~~按 issue #1 实现（顺序：身份解锁 → 拨号/侧边栏 → 存储/文字 → 文件 → 语音 → 视频）~~
 5. ~~v1 审查修补~~ issue #19 (已关：#20–#25)
 6. ~~全项目 code review~~ 完成 (2026-09-10)
-7. **Spec 修复**: issue #33 (补充测试覆盖与映射确认)
+7. ~~Spec 修复~~ issue #33
 8. **(可选) 架构改进**: issue #34 Step 1+2 已合入；剩可选 Step 3 `Transfer::try_enqueue_chunk`
-9. 朋友异机验收
-10. macOS：#1 完成后再开独立 spec（ADR-0001）
+9. ~~朋友异机验收~~ [issue #41](https://github.com/klzw2233/p2p-comm/issues/41) 已关（Win10 四项通）
+10. macOS 客户端：spec 在 [issue #42](https://github.com/klzw2233/p2p-comm/issues/42)（ADR-0002）；#41 已关，实现可开工
 
 ## 已知约束
 
