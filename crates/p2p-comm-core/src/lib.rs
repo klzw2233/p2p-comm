@@ -74,6 +74,24 @@ pub fn default_data_dir() -> Result<PathBuf, Error> {
         .ok_or(Error::DataDirUnavailable)
 }
 
+/// Isolated data directory for a named local profile (same-machine two-instance tests).
+///
+/// Layout: `<platform-data>/p2p-comm-<name>`. `name` is a single path segment
+/// (`alice`, not `../alice` or `a/b`).
+///
+/// # Errors
+///
+/// * [`Error::DataDirUnavailable`] if the platform data directory cannot be resolved
+/// * [`Error::InvalidPeerId`] if `name` is empty or contains a path separator
+pub fn profile_data_dir(name: &str) -> Result<PathBuf, Error> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return Err(Error::InvalidPeerId);
+    }
+    dirs::data_dir()
+        .map(|dir| dir.join(format!("p2p-comm-{name}")))
+        .ok_or(Error::DataDirUnavailable)
+}
+
 /// Whether an encrypted identity already exists in the platform data directory.
 #[must_use]
 pub fn has_stored_identity() -> bool {
@@ -241,6 +259,23 @@ mod tests {
             .expect("platform data dir")
             .join("p2p-comm");
         assert_eq!(dir, expected);
+    }
+
+    #[test]
+    fn profile_data_dir_is_sibling_of_default() {
+        let dir = profile_data_dir("alice").expect("profile");
+        let expected = dirs::data_dir()
+            .expect("platform data dir")
+            .join("p2p-comm-alice");
+        assert_eq!(dir, expected);
+        assert_ne!(dir, default_data_dir().expect("default"));
+    }
+
+    #[test]
+    fn profile_data_dir_rejects_path_separators() {
+        assert_eq!(profile_data_dir(""), Err(Error::InvalidPeerId));
+        assert_eq!(profile_data_dir("a/b"), Err(Error::InvalidPeerId));
+        assert_eq!(profile_data_dir("a\\b"), Err(Error::InvalidPeerId));
     }
 
     #[test]

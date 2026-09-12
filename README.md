@@ -39,6 +39,15 @@ cargo build --release
 cargo run --release -p p2p-comm-gui
 ```
 
+同一台机器开两个身份（测拨号，不共用数据目录）：
+
+```bash
+cargo run --release -p p2p-comm-gui -- --profile alice
+cargo run --release -p p2p-comm-gui -- --profile bob
+```
+
+各自的数据在 `p2p-comm-alice` / `p2p-comm-bob`（平台数据目录下，和默认的 `p2p-comm` 并列）。窗口里复制 Peer ID 互相拨。音视频仍会抢同一套默认麦/摄像头，文字/文件拨号可以这样测。
+
 ### Windows GUI（GitHub Actions）
 
 Actions → **Win10 GUI** → Run workflow。编完下载 artifact `p2p-comm-gui-windows`（`p2p-comm-gui.exe`）。
