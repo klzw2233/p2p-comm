@@ -1178,6 +1178,19 @@ impl Drop for Node {
     }
 }
 
+/// `#[tokio::test]` already has a Handle. Plain `#[test]` does not.
+/// Keep one runtime so `Handle::spawn` still has a reactor.
+#[cfg(test)]
+fn current_or_test_runtime() -> tokio::runtime::Handle {
+    tokio::runtime::Handle::try_current().unwrap_or_else(|_| {
+        static TEST_RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        TEST_RT
+            .get_or_init(|| tokio::runtime::Runtime::new().expect("test tokio runtime"))
+            .handle()
+            .clone()
+    })
+}
+
 fn snapshot(
     nicknames: &NicknameStore,
     roster: &Roster,
@@ -1293,18 +1306,6 @@ fn unix_millis() -> u64 {
 
 fn n0_hints() -> DialHints {
     DialHints::relays(N0_RELAY_URLS.iter().copied())
-}
-
-/// `#[tokio::test]` already has a Handle. Plain `#[test]` does not.
-/// Keep one runtime so `Handle::spawn` still has a reactor.
-fn current_or_test_runtime() -> tokio::runtime::Handle {
-    tokio::runtime::Handle::try_current().unwrap_or_else(|_| {
-        static TEST_RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-        TEST_RT
-            .get_or_init(|| tokio::runtime::Runtime::new().expect("test tokio runtime"))
-            .handle()
-            .clone()
-    })
 }
 
 fn connect_error_text(err: &p2p_core::Error) -> String {
@@ -2175,7 +2176,7 @@ mod tests {
         };
         // No current runtime — same as eframe's thread after `block_on`.
         let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = node.rt.spawn(async {});
+            drop(node.rt.spawn(async {}));
         }));
         drop(node);
         let _ = std::fs::remove_dir_all(&dir);
