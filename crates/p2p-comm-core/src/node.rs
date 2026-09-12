@@ -297,6 +297,7 @@ pub struct Node {
     events: mpsc::UnboundedReceiver<Event>,
     io_events: mpsc::UnboundedReceiver<IoEvent>,
     io_tx: mpsc::UnboundedSender<IoEvent>,
+    rt: tokio::runtime::Handle,
     accept: JoinHandle<()>,
     dialer: JoinHandle<()>,
 }
@@ -323,15 +324,16 @@ impl Node {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (evt_tx, evt_rx) = mpsc::unbounded_channel();
         let (io_tx, io_rx) = mpsc::unbounded_channel();
+        let rt = tokio::runtime::Handle::current();
 
         let accept_ep = Arc::clone(&endpoint);
         let accept_tx = evt_tx.clone();
-        let accept = tokio::spawn(async move {
+        let accept = rt.spawn(async move {
             accept_loop(accept_ep, accept_tx).await;
         });
 
         let dial_ep = Arc::clone(&endpoint);
-        let dialer = tokio::spawn(async move {
+        let dialer = rt.spawn(async move {
             dial_loop(dial_ep, cmd_rx, evt_tx).await;
         });
 
@@ -355,12 +357,16 @@ impl Node {
             events: evt_rx,
             io_events: io_rx,
             io_tx,
+            rt,
             accept,
             dialer,
         })
     }
 
     /// Drain network events. Call from the GUI tick; never blocks.
+    ///
+    /// Session workers are spawned via the `Handle` captured in [`Node::start`],
+    /// so this is safe on the eframe thread (no current Tokio context).
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(event) = self.events.try_recv() {
@@ -1003,7 +1009,7 @@ impl Node {
         }
         self.roster.connected(peer_id_hex.clone());
         let io_tx = self.io_tx.clone();
-        self.workers.push(tokio::spawn(async move {
+        self.workers.push(self.rt.spawn(async move {
             session_loop(peer_id_hex, session, rx, dgram_rx, io_tx).await;
         }));
     }
@@ -1032,6 +1038,7 @@ impl Node {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (_evt_tx, evt_rx) = mpsc::unbounded_channel();
         let (io_tx, io_rx) = mpsc::unbounded_channel();
+        let rt = current_or_test_runtime();
         Ok(Self {
             local_peer_id_hex,
             nicknames,
@@ -1049,8 +1056,9 @@ impl Node {
             events: evt_rx,
             io_events: io_rx,
             io_tx,
-            accept: tokio::spawn(async {}),
-            dialer: tokio::spawn(async {}),
+            rt: rt.clone(),
+            accept: rt.spawn(async {}),
+            dialer: rt.spawn(async {}),
         })
     }
 
@@ -1159,6 +1167,7 @@ impl Node {
 
 impl Drop for Node {
     fn drop(&mut self) {
+        let _enter = self.rt.enter();
         self.accept.abort();
         self.dialer.abort();
         for w in &self.workers {
@@ -1167,6 +1176,19 @@ impl Drop for Node {
         self.peers.clear();
         self.stop_media();
     }
+}
+
+/// `#[tokio::test]` already has a Handle. Plain `#[test]` does not.
+/// Keep one runtime so `Handle::spawn` still has a reactor.
+#[cfg(test)]
+fn current_or_test_runtime() -> tokio::runtime::Handle {
+    tokio::runtime::Handle::try_current().unwrap_or_else(|_| {
+        static TEST_RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        TEST_RT
+            .get_or_init(|| tokio::runtime::Runtime::new().expect("test tokio runtime"))
+            .handle()
+            .clone()
+    })
 }
 
 fn snapshot(
@@ -2129,6 +2151,36 @@ mod tests {
         assert!(snap.pending_offer.is_none());
         assert!(snap.transfer.is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `test_node` (and GUI `poll` after `block_on` returns) must spawn without a
+    /// current Tokio context. Matches issue #41: `there is no reactor running`.
+    #[test]
+    fn test_node_constructs_without_current_runtime() {
+        let dir = temp_path();
+        let node = Node::test_node(&dir, "correct-horse").expect("node");
+        drop(node);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// After the runtime that created the Handle is no longer current, `poll`
+    /// still has to spawn a session worker the way the GUI tick does.
+    #[test]
+    fn spawn_after_runtime_context_left() {
+        let dir = temp_path();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let handle = rt.handle().clone();
+        let node = {
+            let _enter = handle.enter();
+            Node::test_node(&dir, "correct-horse").expect("node")
+        };
+        // No current runtime — same as eframe's thread after `block_on`.
+        let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(node.rt.spawn(async {}));
+        }));
+        drop(node);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(spawned.is_ok(), "Handle::spawn must work off current context");
     }
 
     fn connected_node(dir: &std::path::Path) -> (Node, PeerIdHex, mpsc::UnboundedReceiver<Vec<u8>>) {
