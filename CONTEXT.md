@@ -8,11 +8,12 @@
 - **信任状态**: Verified（已验证）/ TOFU（首次信任）/ Unknown（不信任，等价于 spec 中的"Untrusted"），由 P2PCore 的 TrustStore 管理。P2PCore 的 `TrustState` 枚举只有三个值：`Verified`、`Tofu`、`Unknown`，其中 `Unknown` 对应 spec 文档中提到的"Untrusted"语义
 - **信令**: 通话邀请/接受/拒绝/结束等控制消息，走可靠流，复用 p2p-chat ADR-0001 帧格式
 - **媒体流**: 音视频实时数据。音频走 QUIC 数据报（不可靠）；视频走数据报但 NAL 必须切到 path MTU 以内（见 issue #1）
-- **数据目录**: 存放身份密钥、信任记录、本地昵称表、加密聊天记录的目录
+- **数据目录**: 存放身份密钥、信任记录、本地昵称表、加密聊天记录、设置、日志的目录
   - Linux: `~/.local/share/p2p-comm`
   - Windows: `%APPDATA%\p2p-comm`
   - `--profile NAME`（同机第二身份）: 平台数据目录下的 `p2p-comm-NAME`
   - macOS（spec #42，未实现）: `~/Library/Application Support/p2p-comm`
+- **未接来电**: 入站邀请在被叫未 Accept/Reject 的情况下结束（主叫取消、90s 超时、振铃时断线）。聊天里瞬时红字，不进 JSONL。info 日志记一行。
 
 ## 架构
 
@@ -30,7 +31,7 @@
 └─────────────────────┘
 ```
 
-权威规格: GitHub issue #1。`docs/spec-v1.md` 是同步副本。栈评估: `notes/2026-09-06-stack-architecture-review.md`。macOS：增量 spec [issue #42](https://github.com/klzw2233/p2p-comm/issues/42)，见 [ADR-0002](docs/adr/0002-macos-client.md)。#41 已关，实现可开工（未实现）。ADR-0001 已 superseded。
+权威规格: GitHub issue #1。`docs/spec-v1.md` 是同步副本。macOS：增量 spec [issue #42](https://github.com/klzw2233/p2p-comm/issues/42)，本地 [`docs/spec-macos.md`](docs/spec-macos.md)，见 [ADR-0002](docs/adr/0002-macos-client.md)。CLI/日志：[issue #48](https://github.com/klzw2233/p2p-comm/issues/48) / [`docs/spec-cli-flags.md`](docs/spec-cli-flags.md)，[ADR-0003](docs/adr/0003-optional-custom-relay.md)。注意力/设置：[issue #49](https://github.com/klzw2233/p2p-comm/issues/49) / [`docs/spec-ux-attention.md`](docs/spec-ux-attention.md)。#41 已关。ADR-0001 已 superseded。栈评估: `notes/2026-09-06-stack-architecture-review.md`。
 
 ## 范围
 
@@ -42,7 +43,10 @@
 - 本地昵称表（JSON 存储）
 - 加密聊天记录（JSONL；Argon2id 派生主密钥，再 HKDF 按 Peer 分密钥，ChaCha20-Poly1305）
 - 多会话 UI（侧边栏昵称列表，并行聊天）
-- 平台: Linux + Windows 10。macOS 增量 spec 见 issue #42 / ADR-0002（未实现；#41 已关）
+- 平台: Linux + Windows 10。macOS 增量 spec 见 issue #42 / ADR-0002 / `docs/spec-macos.md`（未实现；#41 已关）
+- CLI: `--profile`；可选 `--relay` / `--no-relay` / `--debug`（spec 未实现）
+- 默认 info 文件日志 `{data_dir}/logs/`（spec 未实现）
+- 后台注意力：提示音 + 任务栏闪烁；设置页两个总开关（spec 未实现）
 
 **范围外**:
 - macOS 客户端实现（spec 在 #42；#41 已关，尚未写代码；不是架构限制）
@@ -56,11 +60,15 @@
 - 离线消息投递
 - 第二条 QUIC 可靠流（P2PCore Session 目前只暴露一条）
 - 钥匙串 / 系统密码管理器
-- 自建 relay（v1 显式 opt-in n0 公共 relay，hobby 无 SLA）
+- 设置页配置 relay / 热切换 relay（CLI `--relay` / `--no-relay` 见 spec-cli-flags；默认仍 n0）
+- 托盘、消息气泡、Dock 徽章、Mac 通知中心
+- 联系人页 / 搜索 / 按加入时间排序
+- 信任验证 UI / SAS / 入站 Session 同意门（第一次连上仍是 TOFU；Verified 目前 GUI 走不到）
+- 改密（须连聊天盐一起迁）
 
 ## 依赖
 
-- **P2PCore**: Session 抽象、信任管理、身份密码封装（git 依赖 `main`）
+- **P2PCore**: Session 抽象、信任管理、身份密码封装、`RelayConfig::{n0_public, custom, disabled}`（git 依赖 `main`）
 - **eframe/egui**: 0.30（不跟 0.36：MSRV 不够）
 - **nokhwa**: 0.10，`input-v4l` + `input-msmf`（macOS `input-avfoundation` 属 #42，未实现）
 - **openh264**: 0.9

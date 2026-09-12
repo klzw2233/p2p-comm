@@ -4,8 +4,11 @@
 
 **当前阶段**: v1 功能已完成。#41 Win10 异机：拨号/文字/文件/语音/视频已通并关闭。中文方框：egui 默认无 CJK，启动时加载系统字体（微软雅黑 / Noto CJK）。macOS 增量 spec 是 [issue #42](https://github.com/klzw2233/p2p-comm/issues/42)（#41 已关，实现可开工；未实现）。
 
-**最新动态** (2026-09-11):
-- 开出 [issue #41](https://github.com/klzw2233/p2p-comm/issues/41)（v1 异机验收）和 [issue #42](https://github.com/klzw2233/p2p-comm/issues/42)（macOS 增量 spec）
+**最新动态** (2026-09-12):
+- 开出 [issue #48](https://github.com/klzw2233/p2p-comm/issues/48)（CLI/日志）和 [issue #49](https://github.com/klzw2233/p2p-comm/issues/49)（UX 注意力）
+- ADR-0003：自建 relay 走 CLI
+- macOS spec 本地副本 [docs/spec-macos.md](docs/spec-macos.md)（#42）
+- 开出 [issue #41](https://github.com/klzw2233/p2p-comm/issues/41)（v1 异机验收，已关）和 [issue #42](https://github.com/klzw2233/p2p-comm/issues/42)（macOS 增量 spec）
 - ADR-0002 取代 ADR-0001
 - issue #34 Step 1+2 已合入：`PeerIdHex` (#36) + `PeerState` (#37)
 - issue #34 仍 OPEN：可选 Step 3 `Transfer::try_enqueue_chunk` 未做
@@ -54,6 +57,7 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 
 - [ADR-0001](docs/adr/0001-defer-macos.md): macOS 不并进 issue #1（superseded）
 - [ADR-0002](docs/adr/0002-macos-client.md): macOS 增量 spec 为 issue #42；行为 = #1；#41 已关
+- [ADR-0003](docs/adr/0003-optional-custom-relay.md): 自建 relay 走 CLI `--relay` / `--no-relay`，不进设置页；默认仍 n0
 
 ## 范围边界
 
@@ -71,6 +75,7 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 - 多设备聚合展示
 - 线上交换 profile
 - 第二条可靠流（P2PCore Session 只暴露一条；传文件会堵住文字/信令）
+- 设置页配 relay / 热切换；托盘；联系人页；信任验证 UI；改密
 
 ## 待办
 
@@ -83,12 +88,14 @@ Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。
 7. ~~Spec 修复~~ issue #33
 8. **(可选) 架构改进**: issue #34 Step 1+2 已合入；剩可选 Step 3 `Transfer::try_enqueue_chunk`
 9. ~~朋友异机验收~~ [issue #41](https://github.com/klzw2233/p2p-comm/issues/41) 已关（Win10 四项通）
-10. macOS 客户端：spec 在 [issue #42](https://github.com/klzw2233/p2p-comm/issues/42)（ADR-0002）；#41 已关，实现可开工
+10. macOS 客户端：spec 在 [issue #42](https://github.com/klzw2233/p2p-comm/issues/42)，本地 [docs/spec-macos.md](docs/spec-macos.md)（ADR-0002）；#41 已关，实现可开工
+11. CLI / 日志：[issue #48](https://github.com/klzw2233/p2p-comm/issues/48)，本地 [docs/spec-cli-flags.md](docs/spec-cli-flags.md)（ADR-0003）
+12. UX 注意力 / 设置 / 90s 超时：[issue #49](https://github.com/klzw2233/p2p-comm/issues/49)，本地 [docs/spec-ux-attention.md](docs/spec-ux-attention.md)
 
 ## 已知约束
 
 - **同机测试不可靠**: Win10 宿主 + Ubuntu VM 同时跑会抢摄像头/麦克风，验证以朋友异机测试为准
-- **Relay**: v1 用 `RelayConfig::n0_public()`。n0 公共 relay 是 hobby：无 SLA、有限速、能看见连接元数据（IP/时长/流量）。直连失败时视频会卡。生产需自建或付费 relay
+- **Relay**: 默认 `RelayConfig::n0_public()`。n0 公共 relay 是 hobby：无 SLA、有限速、能看见连接元数据（IP/时长/流量）。直连失败时视频会卡。可选 `--relay` / `--no-relay`（spec-cli-flags，未实现；ADR-0003）
 - **视频数据报**: DATAGRAM 不能分片。编码必须把 slice 卡在 `max_datagram_size() - 9` 以内；丢包花屏是 v1 可接受行为。`max_datagram_size` 在 Session 接入时快照，不在每帧重读
 - **文件 HOL**: 控制流和 FileChunk 共用一条可靠流。出站一次只排队一块 64KiB；文字/挂断等当前块写完，不是等整份文件
 - **H.264**: `openh264` crate 默认编译 Cisco 源码。Cisco 的 MPEG LA 覆盖只针对 **它分发的预编译二进制模块**，不自动覆盖自编译。本仓库是私人、不发布、非商用工具，实际风险低，但不是法律结论
