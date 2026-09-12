@@ -25,7 +25,10 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "p2p-comm",
         options,
-        Box::new(move |_cc| Ok(Box::new(App::new(data_dir)))),
+        Box::new(move |cc| {
+            install_cjk_fallback(&cc.egui_ctx);
+            Ok(Box::new(App::new(data_dir)))
+        }),
     )
 }
 
@@ -607,6 +610,55 @@ fn status_text(status: Option<PeerStatus>) -> &'static str {
     }
 }
 
+/// egui ships Ubuntu-Light (Latin). CJK glyphs tofu unless a system font is added.
+fn install_cjk_fallback(ctx: &egui::Context) {
+    let Some((name, bytes)) = load_cjk_font() else {
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts
+        .font_data
+        .insert(name.clone(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        family.push(name.clone());
+    }
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+        family.push(name);
+    }
+    ctx.set_fonts(fonts);
+}
+
+fn load_cjk_font() -> Option<(String, Vec<u8>)> {
+    for path in cjk_font_candidates() {
+        if let Ok(bytes) = std::fs::read(&path) {
+            return Some((path.display().to_string(), bytes));
+        }
+    }
+    None
+}
+
+fn cjk_font_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(windir) = std::env::var_os("WINDIR") {
+        let fonts = PathBuf::from(windir).join("Fonts");
+        for name in ["msyh.ttc", "msyh.ttf", "simhei.ttf", "simsun.ttc", "msyhbd.ttc"] {
+            out.push(fonts.join(name));
+        }
+    }
+    out.extend([
+        PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        PathBuf::from("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+        PathBuf::from("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"),
+        PathBuf::from("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
+        PathBuf::from("/usr/share/fonts/truetype/arphic/uming.ttc"),
+        PathBuf::from("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"),
+        PathBuf::from("/System/Library/Fonts/PingFang.ttc"),
+        PathBuf::from("/System/Library/Fonts/STHeiti Light.ttc"),
+        PathBuf::from("/System/Library/Fonts/Hiragino Sans GB.ttc"),
+    ]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_data_dir;
@@ -647,5 +699,24 @@ mod tests {
     #[test]
     fn path_separator_in_profile_is_error() {
         assert!(parse_data_dir(args(&["--profile", "a/b"])).is_err());
+    }
+
+    #[test]
+    fn cjk_candidates_include_windows_msyh() {
+        let paths = super::cjk_font_candidates();
+        let names: Vec<_> = paths
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+            .collect();
+        assert!(
+            names.contains(&"msyh.ttc") || names.contains(&"NotoSansCJK-Regular.ttc"),
+            "expected a CJK candidate, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn load_cjk_font_is_optional() {
+        // CI images may lack CJK fonts; the installer must not panic either way.
+        let _ = super::load_cjk_font();
     }
 }
