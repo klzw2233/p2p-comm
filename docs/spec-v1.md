@@ -195,6 +195,8 @@ A/B: CallEnd
 - 移动端
 - 第二条 QUIC 可靠流
 - 视频 FEC/NACK / 每帧一 stream（升级路径，v1 不做）
+- 设置页配置 relay / 热切换（CLI 见 issue #48 / `docs/spec-cli-flags.md`）
+- 托盘、联系人页、信任验证 UI、改密（见 issue #49 / `docs/spec-ux-attention.md` 以后另票）
 
 ## 验收标准
 
@@ -213,6 +215,6 @@ A/B: CallEnd
 3. **文件传输**: 核心逻辑 + GUI 进度条
 4. ~~**语音通话**: 核心逻辑 + GUI 通话 UI~~ 已合入（PR #17 / issue #7）
 5. ~~**视频通话**: 核心逻辑 + GUI 视频显示~~ 已合入（PR #18 / issue #8）
-6. **打磨**: 错误处理 + 日志 + 文档
+6. **打磨**: 错误处理 + 日志 + 文档 — 日志改走 [spec-cli-flags](./spec-cli-flags.md) / #48；注意力/设置走 [spec-ux-attention](./spec-ux-attention.md) / #49
 
 每个阶段都先通过 CI，再找朋友测试。

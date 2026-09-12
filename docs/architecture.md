@@ -394,9 +394,9 @@ GUI 点语音按钮
 
 ### Relay 依赖
 
-**现状**: `RelayConfig::n0_public()`，n0 公共 relay 是 hobby (无 SLA、有限速)。
+**现状**: 默认 `RelayConfig::n0_public()`。可选 CLI `--relay` / `--no-relay`（[spec-cli-flags](./spec-cli-flags.md)，未实现；[ADR-0003](./adr/0003-optional-custom-relay.md)）。n0 公共 relay 是 hobby (无 SLA、有限速)。
 
-**权衡**: 直连失败时视频会卡。生产需自建 relay。
+**权衡**: 直连失败时视频会卡。自建走启动参数，不进设置页、不热切换。
 
 ### 平台支持
 
@@ -467,11 +467,13 @@ GUI 点语音按钮
 - [ ] 视频: 一帧一流 + 过时 reset (消除丢包花屏)
 - [ ] 设备选择 UI
 - [ ] 回声消除
-- [ ] 自建 relay 文档
+- [x] 自建 relay 走 CLI（ADR-0003 / spec-cli-flags；实现未做）
+- [ ] CLI `--relay` / `--debug` + 文件日志实现（issue #48 / spec-cli-flags）
+- [ ] 注意力声音 / 设置页 / 90s 超时（issue #49 / spec-ux-attention）
 
 ## 参考
 
-- 权威 spec: GitHub issue #1（macOS 增量 spec: issue #42）
+- 权威 spec: GitHub issue #1（macOS: issue #42 / [spec-macos](./spec-macos.md)；CLI: issue #48 / [spec-cli-flags](./spec-cli-flags.md)；UX: issue #49 / [spec-ux-attention](./spec-ux-attention.md)）
 - 术语表: CONTEXT.md
 - 架构决策: docs/adr/
 - 交接信息: HANDOFF.md

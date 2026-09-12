@@ -47,6 +47,8 @@ cargo run --release -p p2p-comm-gui -- --profile alice
 cargo run --release -p p2p-comm-gui -- --profile bob
 ```
 
+其它启动参数（`--relay` / `--no-relay` / `--debug`）见 [docs/spec-cli-flags.md](docs/spec-cli-flags.md) / [issue #48](https://github.com/klzw2233/p2p-comm/issues/48)（未实现）。macOS 增量 spec：[issue #42](https://github.com/klzw2233/p2p-comm/issues/42) / [docs/spec-macos.md](docs/spec-macos.md)。注意力/设置：[docs/spec-ux-attention.md](docs/spec-ux-attention.md) / [issue #49](https://github.com/klzw2233/p2p-comm/issues/49)。
+
 各自的数据在 `p2p-comm-alice` / `p2p-comm-bob`（平台数据目录下，和默认的 `p2p-comm` 并列）。窗口里复制 Peer ID 互相拨。音视频仍会抢同一套默认麦/摄像头，文字/文件拨号可以这样测。
 
 ### Windows GUI（GitHub Actions）
@@ -74,7 +76,7 @@ git push origin v0.1.0
 6. **语音**: 聊天视图点 "Voice"。被叫弹窗接受/拒绝（同意前不占麦）。Untrusted 入站邀请直接拒绝。全进程同时一路通话；任意聊天视图都能挂断当前那一路。通话期间同一 Session 仍能发文字
 7. **视频**: 聊天视图点 "Video"。信令同语音（`CallInvite { media: AudioVideo }`）。同意前不打开摄像头。接通后聊天视图顶部显示对方 640×480 画面（按窗口宽度缩放），同时有语音。丢包可能导致花屏（v1 不做 FEC/NACK）
 8. **通话时请使用耳机**（v1 不含回声消除；只用系统默认设备，无设备选择界面）
-9. v1 使用 n0 公共 relay（hobby，无 SLA）。直连失败时音视频可能被限速
+9. 默认使用 n0 公共 relay（hobby，无 SLA）。直连失败时音视频可能被限速。自建 relay / 关掉 relay：见 `--relay` / `--no-relay`（[spec-cli-flags](docs/spec-cli-flags.md)，未实现）
 10. v1 已知限制：文件传输期间文字/信令会排在当前 64KiB 分块之后（同一条可靠流的队头阻塞，不是等整份文件）；传输中断开连接则该次传输失败、不续传
 
 ## 数据目录
@@ -88,6 +90,8 @@ git push origin v0.1.0
 - 信任记录
 - 本地昵称表
 - 加密聊天记录
+- 设置（提示音 / 任务栏闪烁；spec 未实现）
+- 日志（`logs/`；spec 未实现）
 
 ## 架构
 
@@ -99,7 +103,7 @@ p2p-comm-core (无头核心)
 P2PCore (Session 抽象 + 信任管理)
 ```
 
-详见 [CONTEXT.md](./CONTEXT.md)、[HANDOFF.md](./HANDOFF.md) 和规格 [issue #1](https://github.com/klzw2233/p2p-comm/issues/1)。
+详见 [CONTEXT.md](./CONTEXT.md)、[HANDOFF.md](./HANDOFF.md) 和规格 [issue #1](https://github.com/klzw2233/p2p-comm/issues/1)。macOS：[issue #42](https://github.com/klzw2233/p2p-comm/issues/42) / [docs/spec-macos.md](docs/spec-macos.md)。CLI：[issue #48](https://github.com/klzw2233/p2p-comm/issues/48) / [docs/spec-cli-flags.md](docs/spec-cli-flags.md)。UX：[issue #49](https://github.com/klzw2233/p2p-comm/issues/49) / [docs/spec-ux-attention.md](docs/spec-ux-attention.md)。
 
 ## 开发
 
