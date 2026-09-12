@@ -1,13 +1,23 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::path::PathBuf;
+
 use eframe::egui;
 
 use p2p_comm_core::{
-    default_data_dir, has_stored_identity, CallPhase, CallResult, Error, FileProgress,
-    MediaType, Node, PeerIdHex, PeerStatus, PendingInvite, PendingOffer, Snapshot, TransferStatus, VideoFrame,
+    default_data_dir, has_stored_identity_in, profile_data_dir, CallPhase, CallResult, Error,
+    FileProgress, MediaType, Node, PeerIdHex, PeerStatus, PendingInvite, PendingOffer, Snapshot,
+    TransferStatus, VideoFrame,
 };
 
 fn main() -> eframe::Result {
+    let data_dir = match parse_data_dir(std::env::args().skip(1)) {
+        Ok(dir) => dir,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]),
         ..Default::default()
@@ -15,8 +25,39 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "p2p-comm",
         options,
-        Box::new(|_cc| Ok(Box::new(App::new()))),
+        Box::new(move |_cc| Ok(Box::new(App::new(data_dir)))),
     )
+}
+
+/// `--profile NAME` → `profile_data_dir`; no flag → platform default.
+fn parse_data_dir(args: impl IntoIterator<Item = String>) -> Result<PathBuf, String> {
+    let mut args = args.into_iter();
+    let mut profile = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--profile" => {
+                let name = args
+                    .next()
+                    .ok_or_else(|| "missing value for --profile".to_owned())?;
+                if profile.replace(name).is_some() {
+                    return Err("--profile given more than once".into());
+                }
+            }
+            "--help" | "-h" => {
+                return Err(
+                    "p2p-comm-gui [--profile NAME]\n  --profile NAME  isolated identity (p2p-comm-NAME)"
+                        .into(),
+                );
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    match profile {
+        Some(name) => profile_data_dir(&name).map_err(|_| {
+            "invalid --profile: use a single name (letters/digits), no path separators".to_owned()
+        }),
+        None => default_data_dir().map_err(|_| "could not locate the data directory".to_owned()),
+    }
 }
 
 enum Screen {
@@ -30,12 +71,12 @@ struct UnlockForm {
     returning: bool,
 }
 
-impl Default for UnlockForm {
-    fn default() -> Self {
+impl UnlockForm {
+    fn new(data_dir: &std::path::Path) -> Self {
         Self {
             password: String::new(),
             error: None,
-            returning: has_stored_identity(),
+            returning: has_stored_identity_in(data_dir),
         }
     }
 }
@@ -53,14 +94,17 @@ struct MainState {
 
 struct App {
     rt: tokio::runtime::Runtime,
+    data_dir: PathBuf,
     screen: Screen,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(data_dir: PathBuf) -> Self {
+        let screen = Screen::Unlock(UnlockForm::new(&data_dir));
         Self {
             rt: tokio::runtime::Runtime::new().expect("tokio runtime"),
-            screen: Screen::Unlock(UnlockForm::default()),
+            data_dir,
+            screen,
         }
     }
 }
@@ -70,7 +114,7 @@ impl eframe::App for App {
         let next = match &mut self.screen {
             Screen::Unlock(form) => {
                 if unlock_ui(ctx, form) {
-                    match start_node(&self.rt, &form.password) {
+                    match start_node(&self.rt, &self.data_dir, &form.password) {
                         Ok(node) => Some(Screen::Main(Box::new(MainState {
                             node,
                             dial: String::new(),
@@ -127,9 +171,12 @@ impl eframe::App for App {
     }
 }
 
-fn start_node(rt: &tokio::runtime::Runtime, password: &str) -> Result<Node, Error> {
-    let dir = default_data_dir()?;
-    rt.block_on(Node::start(&dir, password))
+fn start_node(
+    rt: &tokio::runtime::Runtime,
+    dir: &std::path::Path,
+    password: &str,
+) -> Result<Node, Error> {
+    rt.block_on(Node::start(dir, password))
 }
 
 fn error_text(err: Error) -> &'static str {
@@ -557,5 +604,48 @@ fn status_text(status: Option<PeerStatus>) -> &'static str {
         Some(PeerStatus::Connected) => "Connected",
         Some(PeerStatus::Failed) => "Disconnected",
         None => "",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_data_dir;
+    use p2p_comm_core::{default_data_dir, profile_data_dir};
+
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn no_flag_uses_default_data_dir() {
+        let dir = parse_data_dir(args(&[])).expect("parse");
+        assert_eq!(dir, default_data_dir().expect("default"));
+    }
+
+    #[test]
+    fn profile_flag_uses_isolated_dir() {
+        let dir = parse_data_dir(args(&["--profile", "alice"])).expect("parse");
+        assert_eq!(dir, profile_data_dir("alice").expect("alice"));
+        assert_ne!(dir, default_data_dir().expect("default"));
+    }
+
+    #[test]
+    fn missing_profile_value_is_error() {
+        assert!(parse_data_dir(args(&["--profile"])).is_err());
+    }
+
+    #[test]
+    fn unknown_argument_is_error() {
+        assert!(parse_data_dir(args(&["--tmp"])).is_err());
+    }
+
+    #[test]
+    fn duplicate_profile_is_error() {
+        assert!(parse_data_dir(args(&["--profile", "a", "--profile", "b"])).is_err());
+    }
+
+    #[test]
+    fn path_separator_in_profile_is_error() {
+        assert!(parse_data_dir(args(&["--profile", "a/b"])).is_err());
     }
 }

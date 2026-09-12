@@ -24,6 +24,10 @@ cargo build
 
 # 运行（启动后输入身份密码进入主界面）
 cargo run -p p2p-comm-gui
+
+# 同机两个身份（测拨号）
+cargo run -p p2p-comm-gui -- --profile alice
+cargo run -p p2p-comm-gui -- --profile bob
 ```
 
 Win10 GUI：Actions → Win10 GUI → Run workflow，下载 artifact。

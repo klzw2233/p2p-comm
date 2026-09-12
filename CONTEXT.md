@@ -11,6 +11,7 @@
 - **数据目录**: 存放身份密钥、信任记录、本地昵称表、加密聊天记录的目录
   - Linux: `~/.local/share/p2p-comm`
   - Windows: `%APPDATA%\p2p-comm`
+  - `--profile NAME`（同机第二身份）: 平台数据目录下的 `p2p-comm-NAME`
 
 ## 架构
 
